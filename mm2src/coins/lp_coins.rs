@@ -307,6 +307,8 @@ use z_coin::{ZCoin, ZcoinProtocolInfo};
 
 pub mod solana;
 
+pub mod ton;
+
 pub type TransactionFut = Box<dyn Future<Item = TransactionEnum, Error = TransactionErr> + Send>;
 pub type TransactionResult = Result<TransactionEnum, TransactionErr>;
 pub type BalanceResult<T> = Result<T, MmError<BalanceError>>;
