@@ -336,8 +336,10 @@ payments, then adds history and streaming explicitly.
 - [x] Offline derive HD W5R1 with `tonlib-core` and compare with the reference address.
   Passed with the corrected local fixture; only public address, wallet version/ID/network
   and pass/fail were printed. This verifies library derivation, not KDF HD startup.
-- [ ] Derive Iguana independently using existing KDF key construction and record its
-  public expected address. Do not require it to equal the HD reference.
+- [x] Derive Iguana independently using existing KDF key construction and record its
+  public expected address. The disposable `kdf-ton-iguana-vector` passphrase produces
+  `UQBZfhh5F-CFw-1L978b7jrJ0c3FUlssE8jk2ueScxRHleke`; it is intentionally distinct
+  from the HD reference address.
 - [x] Select/lock the minimal usable dependency configuration: `tonlib-core 0.26.11`
   and `nacl 0.5.3`; check native and WASM compatibility. The initial `ton 0.4.0`
   candidate was rejected because its unconditional native transport dependencies fail

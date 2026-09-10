@@ -111,7 +111,10 @@ impl Error for TonWalletError {}
 mod tests {
     use super::*;
     use crate::ton::TonAddressFormat;
+    use crypto::privkey::key_pair_from_seed;
 
+    const IGUANA_PASSPHRASE_VECTOR: &str = "kdf-ton-iguana-vector";
+    const IGUANA_W5_MAINNET_VECTOR: &str = "UQBZfhh5F-CFw-1L978b7jrJ0c3FUlssE8jk2ueScxRHleke";
     const TON_MNEMONIC_VECTOR: &str =
         "section garden tomato dinner season dice renew length useful spin trade intact use universe what post spike keen mandate behind concert egg doll rug";
     const TON_W5_MAINNET_VECTOR: &str = "UQDv2YSmlrlLH3hLNOVxC8FcQf4F9eGNs4vb2zKma4txo6i3";
@@ -150,6 +153,25 @@ mod tests {
 
         assert_eq!(first, repeated);
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn iguana_key_construction_derives_its_own_w5_address() {
+        let key_pair = key_pair_from_seed(IGUANA_PASSPHRASE_VECTOR).unwrap();
+        let address = TonWalletParams::MAINNET_DEFAULT
+            .address_from_seed(&key_pair.private_bytes())
+            .unwrap();
+
+        assert_eq!(
+            address.format(
+                TonAddressFormat::Friendly {
+                    bounceable: false,
+                    urlsafe: true,
+                },
+                TonNetwork::Mainnet,
+            ),
+            IGUANA_W5_MAINNET_VECTOR,
+        );
     }
 
     #[test]
