@@ -358,7 +358,7 @@ public-fixture development can continue but funded acceptance remains blocked.
   reimplementing it.
 - [ ] Add `CoinProtocol::TON`, typed network/W5 parameters, `MmCoinEnum::TonCoinVariant`,
   TON transaction representation and `TxFeeDetails::Ton` as their consumers land.
-- [ ] Encode nano amounts with bounded checked integer arithmetic; no floats, overflow,
+- [x] Encode nano amounts with bounded checked integer arithmetic; no floats, overflow,
   negative/zero send amounts, or fractional precision beyond 9 decimals.
 - [ ] Preserve friendly address flags separately from the raw workchain/account hash.
   Support raw and valid standard/URL-safe friendly forms; validate CRC, tags and length.
@@ -710,6 +710,9 @@ Do not label an unavailable environment or unrun feature gate as a passed check.
   addresses and invalid checksum) and compiled for `wasm32-unknown-unknown`. Its
   disposable verifier read the corrected local seed without printing it and reported
   only a successful comparison with the public reference address.
+- Added exact nanoGRAM parsing, formatting and checked arithmetic. Its isolated
+  source-linked suite ran **3 tests passed**, covering exact 9-decimal conversion,
+  invalid precision/format and `u64` bounds without rounding.
 - The source-linked primitive suite described above is the only KDF TON code validation so
   far. `cargo check --offline -p coins --lib` currently stops in the baseline `mm2_io`
   crate with 69 `std::io::Error: NotMmError` errors under the installed toolchain, before

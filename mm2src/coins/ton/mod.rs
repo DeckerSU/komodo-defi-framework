@@ -5,9 +5,11 @@
 //! parameters explicit.
 
 mod address;
+mod amount;
 mod wallet;
 
 pub use address::{TonAddress, TonAddressError, TonAddressFormat, TonNetwork};
+pub use amount::{TonAmount, TonAmountError};
 pub use wallet::{TonSubwalletId, TonWalletError, TonWalletParams};
 
 pub const TON_DECIMALS: u8 = 9;
