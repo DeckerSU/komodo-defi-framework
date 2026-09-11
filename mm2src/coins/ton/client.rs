@@ -1,4 +1,5 @@
 use super::{TonAddress, TonAddressFormat, TonAmount, TonNetwork};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use common::custom_futures::timeout::FutureTimerExt;
 use derive_more::Display;
 use serde_json::{self as json, Value as Json};
@@ -11,6 +12,8 @@ use zeroize::Zeroizing;
 const TON_RPC_TIMEOUT: Duration = Duration::from_secs(15);
 const TONCENTER_V2_WALLET_INFORMATION: &str = "getWalletInformation";
 const TONCENTER_V2_RUN_GET_METHOD: &str = "runGetMethod";
+const TONCENTER_V2_SEND_BOC_RETURN_HASH: &str = "sendBocReturnHash";
+const MAX_BOC_BYTES: usize = 1024 * 1024;
 #[cfg(target_arch = "wasm32")]
 const TON_API_KEY_HEADER: &str = "X-API-Key";
 
@@ -106,6 +109,22 @@ impl TonRpcClient {
         parse_get_method_seqno(&response)
     }
 
+    /// Broadcasts one already-signed external message and returns the provider's
+    /// message reference. A successful response is not proof that the message
+    /// was included in a block or that its internal transfer was delivered.
+    pub async fn send_boc_return_hash(&self, boc: &[u8]) -> Result<TonBroadcastResult, TonRpcError> {
+        validate_boc(boc)?;
+        let body =
+            json::to_vec(&json::json!({ "boc": BASE64.encode(boc) })).map_err(|_| TonRpcError::InvalidResponse)?;
+        let url = self
+            .endpoint
+            .join(TONCENTER_V2_SEND_BOC_RETURN_HASH)
+            .map_err(|_| TonRpcError::InvalidEndpoint)?;
+
+        let response = self.post(url, body).await?;
+        parse_broadcast_result(&response)
+    }
+
     async fn get(&self, url: Url) -> Result<Vec<u8>, TonRpcError> {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -149,6 +168,55 @@ impl TonRpcClient {
             }
         }
     }
+
+    async fn post(&self, url: Url, body: Vec<u8>) -> Result<Vec<u8>, TonRpcError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use http::header::{HeaderName, HeaderValue, CONTENT_TYPE};
+            use mm2_net::transport::slurp_req;
+
+            let mut request = http::Request::builder()
+                .method(http::Method::POST)
+                .uri(url.as_str())
+                .header(CONTENT_TYPE, "application/json")
+                .body(body)
+                .map_err(|_| TonRpcError::InvalidEndpoint)?;
+            if let Some(api_key) = self.api_key.as_deref() {
+                let header = HeaderValue::from_str(api_key).map_err(|_| TonRpcError::InvalidApiKey)?;
+                request
+                    .headers_mut()
+                    .insert(HeaderName::from_static("x-api-key"), header);
+            }
+
+            match Box::pin(slurp_req(request)).timeout(TON_RPC_TIMEOUT).await {
+                Ok(Ok((status, _headers, body))) if status.is_success() => Ok(body),
+                Ok(Ok((status, _headers, _body))) => Err(TonRpcError::HttpStatus(status.as_u16())),
+                Ok(Err(_)) => Err(TonRpcError::Transport),
+                Err(_) => Err(TonRpcError::Timeout),
+            }
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            use mm2_net::wasm::http::FetchRequest;
+
+            let body = String::from_utf8(body).map_err(|_| TonRpcError::InvalidResponse)?;
+            let mut request = FetchRequest::post(url.as_str())
+                .cors()
+                .body_utf8(body)
+                .header("Content-Type", "application/json");
+            if let Some(api_key) = self.api_key.as_deref() {
+                request = request.header(TON_API_KEY_HEADER, api_key);
+            }
+
+            match Box::pin(request.request_str()).timeout(TON_RPC_TIMEOUT).await {
+                Ok(Ok((status, body))) if status.is_success() => Ok(body.into_bytes()),
+                Ok(Ok((status, _body))) => Err(TonRpcError::HttpStatus(status.as_u16())),
+                Ok(Err(_)) => Err(TonRpcError::Transport),
+                Err(_) => Err(TonRpcError::Timeout),
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -170,6 +238,12 @@ pub struct TonWalletInformation {
     pub wallet_type: Option<String>,
 }
 
+/// The provider's reference to an externally submitted message.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TonBroadcastResult {
+    pub message_hash: String,
+}
+
 #[derive(Debug, Display, Eq, PartialEq)]
 pub enum TonRpcError {
     #[display(fmt = "Invalid TON RPC endpoint")]
@@ -186,6 +260,8 @@ pub enum TonRpcError {
     HttpStatus(u16),
     #[display(fmt = "TON RPC returned an invalid response")]
     InvalidResponse,
+    #[display(fmt = "TON BOC is empty or exceeds the maximum supported size")]
+    InvalidBoc,
     #[display(fmt = "TON RPC rejected the request: {_0}")]
     Remote(String),
 }
@@ -265,6 +341,25 @@ fn parse_get_method_seqno(bytes: &[u8]) -> Result<u32, TonRpcError> {
     Ok(value)
 }
 
+fn parse_broadcast_result(bytes: &[u8]) -> Result<TonBroadcastResult, TonRpcError> {
+    let response: Json = json::from_slice(bytes).map_err(|_| TonRpcError::InvalidResponse)?;
+    let result = parse_success_result(&response)?;
+    let message_hash = result
+        .get("hash")
+        .and_then(Json::as_str)
+        .filter(|hash| !hash.is_empty() && hash.len() <= 128 && hash.trim() == *hash)
+        .map(str::to_owned)
+        .ok_or(TonRpcError::InvalidResponse)?;
+    Ok(TonBroadcastResult { message_hash })
+}
+
+fn validate_boc(boc: &[u8]) -> Result<(), TonRpcError> {
+    if boc.is_empty() || boc.len() > MAX_BOC_BYTES {
+        return Err(TonRpcError::InvalidBoc);
+    }
+    Ok(())
+}
+
 fn limit_error_message(message: &str) -> String {
     message.chars().take(256).collect()
 }
@@ -311,6 +406,26 @@ mod tests {
             parse_get_method_seqno(br#"{"ok":true,"result":{"exit_code":0,"stack":[["num","42"]]}}"#),
             Err(TonRpcError::InvalidResponse),
         );
+    }
+
+    #[test]
+    fn parses_a_broadcast_message_reference_without_equating_it_to_a_transaction() {
+        assert_eq!(
+            parse_broadcast_result(br#"{"ok":true,"result":{"hash":"D3kz2hH78yEYpw=="}}"#),
+            Ok(TonBroadcastResult {
+                message_hash: "D3kz2hH78yEYpw==".to_owned(),
+            }),
+        );
+    }
+
+    #[test]
+    fn rejects_missing_or_unbounded_broadcast_references() {
+        assert_eq!(
+            parse_broadcast_result(br#"{"ok":true,"result":{}}"#),
+            Err(TonRpcError::InvalidResponse),
+        );
+        assert_eq!(validate_boc(&[]), Err(TonRpcError::InvalidBoc));
+        assert_eq!(validate_boc(&vec![0; MAX_BOC_BYTES + 1]), Err(TonRpcError::InvalidBoc));
     }
 
     #[test]

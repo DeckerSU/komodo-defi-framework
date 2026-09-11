@@ -15,7 +15,7 @@ mod wallet;
 
 pub use address::{TonAddress, TonAddressError, TonAddressFormat, TonNetwork};
 pub use amount::{TonAmount, TonAmountError};
-pub use client::{TonAccountState, TonRpcClient, TonRpcError, TonWalletInformation};
+pub use client::{TonAccountState, TonBroadcastResult, TonRpcClient, TonRpcError, TonWalletInformation};
 pub use hd::{derive_ton_hd_seed, TonHdDerivationError, TON_MULTICHAIN_DERIVATION_PATH};
 pub use key::{TonKeyPolicyError, TonSigningSeed};
 pub use protocol::{TonProtocolInfo, TonWalletVersion};

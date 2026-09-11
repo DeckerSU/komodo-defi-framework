@@ -405,8 +405,10 @@ fails without changing storage.
   and optional seqno. Never coerce an absent active-account seqno to zero.
 - [x] Add a strict `runGetMethod(seqno)` fallback for an active wallet when
   `getWalletInformation` omits `seqno`; it validates a successful numeric stack result
-  and never turns a missing value into zero. Masterchain-head, fee, broadcast and
-  history calls remain for their consuming milestones.
+  and never turns a missing value into zero. Add bounded `sendBocReturnHash` support
+  for already-signed BOCs; its result is deliberately a provider message reference,
+  not a confirmed account transaction. Masterchain-head, fee and history calls remain
+  for their consuming milestones.
 - [ ] Distinguish nonexist/uninitialized, active, frozen and unknown states. Only the
   first two imply fresh StateInit; active accounts need compatible W5 state and seqno.
 - [ ] Add request deadlines, bounded retries/backoff, cancellation, endpoint failover
