@@ -70,7 +70,7 @@ use futures01::Future;
 use hex::FromHexError;
 use http::{Response, StatusCode};
 use keys::{AddressFormat as UtxoAddressFormat, KeyPair, NetworkPrefix as CashAddrPrefix, Public};
-use mm2_core::mm_ctx::{from_ctx, MmArc};
+use mm2_core::mm_ctx::MmArc;
 use mm2_err_handle::prelude::*;
 use mm2_metrics::MetricsWeak;
 use mm2_number::BigRational;
@@ -4266,22 +4266,63 @@ pub struct PlatformIsAlreadyActivatedErr {
 impl CoinsContext {
     /// Obtains a reference to this crate context, creating it if necessary.
     pub fn from_ctx(ctx: &MmArc) -> Result<Arc<CoinsContext>, String> {
-        Ok(try_s!(from_ctx(&ctx.coins_ctx, move || {
-            Ok(CoinsContext {
-                platform_coin_tokens: PaMutex::new(HashMap::new()),
-                coins: AsyncMutex::new(HashMap::new()),
-                balance_update_handlers: AsyncMutex::new(vec![]),
-                account_balance_task_manager: AccountBalanceTaskManager::new_shared(ctx.event_stream_manager.clone()),
-                create_account_manager: CreateAccountTaskManager::new_shared(ctx.event_stream_manager.clone()),
-                get_new_address_manager: GetNewAddressTaskManager::new_shared(ctx.event_stream_manager.clone()),
-                scan_addresses_manager: ScanAddressesTaskManager::new_shared(ctx.event_stream_manager.clone()),
-                withdraw_task_manager: WithdrawTaskManager::new_shared(ctx.event_stream_manager.clone()),
-                #[cfg(target_arch = "wasm32")]
-                tx_history_db: ConstructibleDb::new(ctx).into_shared(),
-                #[cfg(target_arch = "wasm32")]
-                hd_wallet_db: ConstructibleDb::new_shared_db(ctx).into_shared(),
-            })
-        })))
+        let mut ctx_coins = try_s!(ctx.coins_ctx.lock());
+        if let Some(coins_ctx) = ctx_coins.as_ref() {
+            return coins_ctx
+                .clone()
+                .downcast()
+                .map_err(|_| "Context type mismatch".to_owned());
+        }
+
+        let coins_ctx = Arc::new(CoinsContext {
+            platform_coin_tokens: PaMutex::new(HashMap::new()),
+            coins: AsyncMutex::new(HashMap::new()),
+            balance_update_handlers: AsyncMutex::new(vec![]),
+            account_balance_task_manager: AccountBalanceTaskManager::new_shared(ctx.event_stream_manager.clone()),
+            create_account_manager: CreateAccountTaskManager::new_shared(ctx.event_stream_manager.clone()),
+            get_new_address_manager: GetNewAddressTaskManager::new_shared(ctx.event_stream_manager.clone()),
+            scan_addresses_manager: ScanAddressesTaskManager::new_shared(ctx.event_stream_manager.clone()),
+            withdraw_task_manager: WithdrawTaskManager::new_shared(ctx.event_stream_manager.clone()),
+            #[cfg(target_arch = "wasm32")]
+            tx_history_db: ConstructibleDb::new(ctx).into_shared(),
+            #[cfg(target_arch = "wasm32")]
+            hd_wallet_db: ConstructibleDb::new_shared_db(ctx).into_shared(),
+        });
+
+        let shutdown_listener = ctx
+            .graceful_shutdown_registry
+            .register_listener()
+            .map_err(|error| error.to_string())?;
+        let weak_coins_ctx = Arc::downgrade(&coins_ctx);
+        common::executor::spawn(async move {
+            shutdown_listener.await;
+            if let Some(coins_ctx) = weak_coins_ctx.upgrade() {
+                coins_ctx.disable_all_coins().await;
+            }
+        });
+
+        *ctx_coins = Some(coins_ctx.clone());
+        Ok(coins_ctx)
+    }
+
+    /// Stops coin-owned background tasks when their MM context is shutting down.
+    ///
+    /// Coin history loops own IndexedDB storage handles on WASM. They use a
+    /// coin-specific `AbortableQueue`, so `MmCtx::stop` alone cannot release
+    /// them before a subsequent wallet login opens the same database.
+    async fn disable_all_coins(&self) {
+        let coins = {
+            let mut coins = self.coins.lock().await;
+            coins.drain().map(|(_, coin)| coin.inner).collect::<Vec<_>>()
+        };
+        self.platform_coin_tokens.lock().clear();
+
+        for coin in coins {
+            let ticker = coin.ticker().to_owned();
+            coin.on_disabled().error_log_with_msg(&format!(
+                "Error aborting coin({ticker}) futures during context shutdown"
+            ));
+        }
     }
 
     pub async fn add_token(&self, coin: MmCoinEnum) -> Result<(), MmError<RegisterCoinError>> {
@@ -6382,6 +6423,7 @@ where
 mod tests {
     use super::*;
     use common::block_on;
+    use common::executor::Timer;
     use mm2_test_helpers::for_tests::RICK;
     use mocktopus::mocking::{MockResult, Mockable};
 
@@ -6433,6 +6475,19 @@ mod tests {
         let _found = common::block_on(lp_coinfind_any(&ctx, RICK)).unwrap();
 
         assert!(matches!(Some(coin), _found));
+    }
+
+    #[test]
+    fn test_coins_are_disabled_on_context_stop() {
+        let ctx = mm2_core::mm_ctx::MmCtxBuilder::default().into_mm_arc();
+        let coins_ctx = CoinsContext::from_ctx(&ctx).unwrap();
+        let coin = MmCoinEnum::TestVariant(TestCoin::new(RICK));
+        block_on(coins_ctx.add_platform_with_tokens(coin, vec![], None)).unwrap();
+
+        block_on(ctx.stop()).unwrap();
+        block_on(Timer::sleep(0.01));
+
+        assert!(block_on(coins_ctx.coins.lock()).is_empty());
     }
 
     #[test]

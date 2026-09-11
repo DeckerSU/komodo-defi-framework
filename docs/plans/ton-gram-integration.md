@@ -708,6 +708,16 @@ wallet reached active GRAM status, displayed its address and zero balance, and
 completed the wallet-information/history requests. Toncenter returned one HTTP
 429 during the public-endpoint sequence; KDF retried it and activation completed.
 
+Logout/history lifecycle fix (2026-09-11): browser logs showed that `MmCtx` and
+the `swap`/`ordermatch` IndexedDB instances were dropped after logout, while the
+wallet `tx_history` instance remained open. `CoinsContext` now listens for
+`MmCtx` graceful shutdown, drains active coins, and calls every coin's
+`on_disabled()` hook. This aborts the coin-specific history workers which hold
+`TxHistoryStorage` clones, so the shared `tx_history` IndexedDB handle can close
+before the next login. `test_coins_are_disabled_on_context_stop` covers the
+shutdown path. Rust 1.90 native test and a WASM `coins` check passed; a new
+optimized WASM bundle was built for browser regression validation.
+
 Required runtime RPC sequence (execute for both modes, with funded sends where funds
 exist; task routes and HD-specific cases apply as indicated):
 
