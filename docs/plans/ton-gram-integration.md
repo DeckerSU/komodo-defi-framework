@@ -592,6 +592,12 @@ multiple out-messages, bounce and self-transfer accounting, legacy/v2 parity.
 History must not be marked complete when a provider cannot supply older pages.
 [Toncenter transaction schema](https://docs.ton.org/ecosystem/api/toncenter/v3/blockchain-data/get-transactions).
 
+Progress (2026-09-11): Toncenter v2 uses an empty `in_msg.source` for an
+external message. The parser now models it as no source address rather than rejecting
+the whole page. History continues after a transient page or v3 height-enrichment
+failure and retries on the next interval; durable cursor/finality/accounting work
+remains open.
+
 ### M8 — Balance and transaction-history streaming
 
 - [x] Add TON transaction-history streaming to the existing activation path and use the coin's abortable
