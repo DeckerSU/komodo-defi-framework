@@ -105,6 +105,12 @@ pub struct CryptoCtx {
     ///   cf. [`GlobalHDAccountCtx::new`].
     secp256k1_key_pair: KeyPair,
     key_pair_policy: KeyPairPolicy,
+    /// Native TON signing material optionally derived from the startup phrase.
+    ///
+    /// A BIP39 session keeps its existing BIP39 policy and receives this only when its
+    /// words are also a valid passwordless TON mnemonic. The two derivation paths must
+    /// never be substituted for one another.
+    ton_mnemonic_key: Option<TonMnemonicKeyArc>,
     /// Can be initialized on [`CryptoCtx::init_hw_ctx_with_trezor`].
     hw_ctx: RwLock<InitializationState<HardwareWalletArc>>,
     #[cfg(target_arch = "wasm32")]
@@ -137,6 +143,11 @@ impl CryptoCtx {
     #[inline]
     pub fn key_pair_policy(&self) -> &KeyPairPolicy {
         &self.key_pair_policy
+    }
+
+    #[inline]
+    pub fn ton_mnemonic_key(&self) -> Option<TonMnemonicKeyArc> {
+        self.ton_mnemonic_key.clone()
     }
 
     /// This is our public ID, allowing us to be different from other peers.
@@ -332,13 +343,14 @@ impl CryptoCtx {
             return MmError::err(CryptoInitError::EmptyPassphrase);
         }
 
-        let (secp256k1_key_pair, key_pair_policy) = policy_builder.build(passphrase)?;
+        let (secp256k1_key_pair, key_pair_policy, ton_mnemonic_key) = policy_builder.build(passphrase)?;
         let rmd160 = secp256k1_key_pair.public().address_hash();
         let shared_db_id = shared_db_id_from_seed(passphrase).map_mm_err()?;
 
         let crypto_ctx = CryptoCtx {
             secp256k1_key_pair,
             key_pair_policy,
+            ton_mnemonic_key,
             hw_ctx: RwLock::new(InitializationState::NotInitialized),
             #[cfg(target_arch = "wasm32")]
             metamask_ctx: RwLock::new(InitializationState::NotInitialized),
@@ -369,16 +381,19 @@ enum KeyPairPolicyBuilder {
 
 impl KeyPairPolicyBuilder {
     /// [`KeyPairPolicyBuilder::build`] is fired if all checks pass **only**.
-    fn build(self, passphrase: &str) -> CryptoInitResult<(KeyPair, KeyPairPolicy)> {
+    fn build(self, passphrase: &str) -> CryptoInitResult<(KeyPair, KeyPairPolicy, Option<TonMnemonicKeyArc>)> {
         match self {
             KeyPairPolicyBuilder::Iguana => {
                 let secp256k1_key_pair = key_pair_from_seed(passphrase).map_mm_err()?;
-                Ok((secp256k1_key_pair, KeyPairPolicy::Iguana))
+                Ok((secp256k1_key_pair, KeyPairPolicy::Iguana, None))
             },
             KeyPairPolicyBuilder::GlobalHDAccount => {
                 let (mm2_internal_key_pair, global_hd_ctx) = GlobalHDAccountCtx::new(passphrase).map_mm_err()?;
                 let key_pair_policy = KeyPairPolicy::GlobalHDAccount(global_hd_ctx.into_arc());
-                Ok((mm2_internal_key_pair, key_pair_policy))
+                let ton_mnemonic_key = TonMnemonicKey::from_mnemonic(passphrase)
+                    .ok()
+                    .map(TonMnemonicKey::into_arc);
+                Ok((mm2_internal_key_pair, key_pair_policy, ton_mnemonic_key))
             },
             KeyPairPolicyBuilder::TonMnemonic => {
                 let ton_key = match TonMnemonicKey::from_mnemonic(passphrase) {
@@ -386,7 +401,7 @@ impl KeyPairPolicyBuilder {
                     Err(_) => return MmError::err(CryptoInitError::InvalidTonMnemonic),
                 };
                 let secp256k1_key_pair = key_pair_from_seed(passphrase).map_mm_err()?;
-                Ok((secp256k1_key_pair, KeyPairPolicy::TonMnemonic(ton_key.into_arc())))
+                Ok((secp256k1_key_pair, KeyPairPolicy::TonMnemonic, Some(ton_key.into_arc())))
             },
         }
     }
@@ -396,7 +411,7 @@ impl KeyPairPolicyBuilder {
 pub enum KeyPairPolicy {
     Iguana,
     GlobalHDAccount(GlobalHDAccountArc),
-    TonMnemonic(TonMnemonicKeyArc),
+    TonMnemonic,
 }
 
 async fn init_check_hw_ctx_with_trezor(

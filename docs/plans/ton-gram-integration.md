@@ -246,6 +246,12 @@ Proposed startup contract:
   handling for existing BIP39-only coin builders. In this new TON-native session,
   other chains are not silently assigned invented BIP39 roots. Existing BIP39
   sessions and other coins' addresses remain unchanged.
+- When a `mnemonic_type: "bip39"` startup phrase also passes the native TON
+  passwordless validation, derive and retain a separate zeroizing TON key alongside
+  the BIP39 context. This allows GRAM to use the same words without changing any
+  existing BIP39-derived addresses. A BIP39-valid phrase that is not TON-valid must
+  not produce a substitute TON address; GRAM activation reports that no native TON
+  key is available.
 - Persist mnemonic type with named/encrypted wallets; reload must not default a TON
   wallet back to BIP39. Cover config imports, encrypted import, named-wallet reload,
   no-login mode, and seed generation. For the first release, reject automatic TON
@@ -735,6 +741,10 @@ Do not label an unavailable environment or unrun feature gate as a passed check.
   **18 tests passed**, and its separate crypto wrapper suite runs **2 tests passed**;
   both compile for wasm32. Its disposable verifier also read the local numbered seed
   and reproduced the public HD reference address without printing the phrase.
+- A BIP39 startup now also derives and retains the separate TON key only when the
+  same words pass native TON validation. This preserves the BIP39 key policy and
+  addresses for existing KDF coins while preparing native GRAM activation from the
+  same valid phrase; a BIP39-only phrase has no TON key and will be rejected by GRAM.
 - `cargo check --offline -p crypto --lib` reaches the existing `common` crate and stops
   on six `chrono` feature errors (`Utc::now`, `Local` and `DelayedFormat`) under the
   installed toolchain before `crypto` is checked. `cargo check --offline -p coins --lib`
