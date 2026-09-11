@@ -180,8 +180,23 @@ impl TonWalletContext {
     pub async fn validate_account_state(&self) -> Result<TonWalletInformation, TonActivationError> {
         let information = self.wallet_information().await?;
         information.transfer_state().map_err(TonActivationError::AccountState)?;
+        if information.account_state == super::TonAccountState::Active
+            && !is_w5r1_wallet_type(information.wallet_type.as_deref())
+        {
+            return Err(TonActivationError::IncompatibleActiveWallet);
+        }
         Ok(information)
     }
+}
+
+fn is_w5r1_wallet_type(wallet_type: Option<&str>) -> bool {
+    let normalized: String = wallet_type
+        .unwrap_or_default()
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_lowercase)
+        .collect();
+    matches!(normalized.as_str(), "v5r1" | "walletv5r1")
 }
 
 #[derive(Debug, Display, Eq, PartialEq)]
@@ -210,6 +225,8 @@ pub enum TonActivationError {
     Rpc(TonRpcError),
     #[display(fmt = "TON account cannot be used: {_0}")]
     AccountState(TonAccountStateError),
+    #[display(fmt = "Active TON account is not a compatible W5R1 wallet")]
+    IncompatibleActiveWallet,
 }
 
 impl Error for TonActivationError {}
@@ -337,5 +354,13 @@ mod tests {
             ),
             Err(TonActivationError::TransactionHistoryUnsupported)
         ));
+    }
+
+    #[test]
+    fn recognizes_only_w5r1_active_wallet_type_labels() {
+        assert!(is_w5r1_wallet_type(Some("v5r1")));
+        assert!(is_w5r1_wallet_type(Some("wallet v5 r1")));
+        assert!(!is_w5r1_wallet_type(None));
+        assert!(!is_w5r1_wallet_type(Some("v4r2")));
     }
 }

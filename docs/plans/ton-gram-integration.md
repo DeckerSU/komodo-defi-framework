@@ -422,10 +422,11 @@ fails without changing storage.
   not a confirmed account transaction. The bounded read pool also obtains the
   masterchain sequence number from `getMasterchainInfo`; fee and history calls remain
   for their consuming milestones.
-- [ ] Distinguish nonexist/uninitialized, active, frozen and unknown states. A typed
-  transfer-state helper now permits StateInit only for uninitialized accounts, requires
-  a real active-account seqno, and rejects frozen/unknown state. Active accounts still
-  need a compatible W5 code/state check before activation and withdrawal.
+- [x] Distinguish nonexist/uninitialized, active, frozen and unknown states. A typed
+  transfer-state helper permits StateInit only for uninitialized accounts, requires a
+  real active-account seqno, rejects frozen/unknown state, and accepts an active account
+  only when TON Center identifies its wallet type as W5R1. Full code-cell hash validation
+  remains desirable before accepting providers other than TON Center.
 - [ ] Add request deadlines, bounded retries/backoff, cancellation, endpoint failover
   and rate limits shared by background consumers. The initial bounded read-only pool now
   tries each configured endpoint once for transport/timeouts/429/5xx and never retries a
