@@ -621,7 +621,8 @@ Progress (2026-09-11): GRAM now has a bounded shared balance poller (15 seconds 
 default; configurable only between 1 and 3600 seconds). It emits an initial balance
 and subsequent changes through the existing manager, which shares one poller among
 subscribers and shuts it down after the last unsubscribe. Failed reads emit an error
-event and do not fabricate a zero balance.
+event and do not fabricate a zero balance. The runtime curl suite enables both
+streamers against SSE and explicitly disables both subscriptions before exit.
 
 Tests: attach client before subscription, streamer IDs, no duplicate worker, event
 contents vs history, bounded slow-client behavior, unsubscribe, reconnect/catch-up,
