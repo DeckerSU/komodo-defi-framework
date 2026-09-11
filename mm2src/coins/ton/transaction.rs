@@ -1,7 +1,8 @@
 use super::{TonAddress, TonAmount, TonAmountError, TonFeeEstimateRequest, TonNetwork};
 use derive_more::Display;
+use ed25519_dalek::{Keypair, PublicKey, SecretKey, Signer};
 use num_bigint::BigUint;
-use std::error::Error;
+use std::{convert::TryInto, error::Error};
 use tonlib_core::{
     cell::CellBuilder,
     message::{CommonMsgInfo, InternalMessage, TonMessage, TransferMessage},
@@ -38,13 +39,12 @@ pub fn build_signed_transfer(
     validate_transfer_request(network, request)?;
 
     let internal = build_internal_transfer(request)?;
+    let unsigned_body = wallet
+        .create_external_body(request.expire_at, request.sequence_number, &[internal.to_arc()])
+        .map_err(|_| TonTransferError::MessageConstruction)?;
+    let signed_body = sign_external_body(wallet, &unsigned_body)?;
     let external = wallet
-        .create_external_msg(
-            request.expire_at,
-            request.sequence_number,
-            request.deploy_wallet,
-            &[internal.to_arc()],
-        )
+        .wrap_signed_body(signed_body, request.deploy_wallet)
         .map_err(|_| TonTransferError::MessageConstruction)?;
     let message_hash = external.cell_hash().to_hex();
     let boc = external.to_boc(true).map_err(|_| TonTransferError::BocSerialization)?;
@@ -67,9 +67,7 @@ pub fn build_fee_estimate_request(
     let unsigned_body = wallet
         .create_external_body(request.expire_at, request.sequence_number, &[internal.to_arc()])
         .map_err(|_| TonTransferError::MessageConstruction)?;
-    let signed_body = wallet
-        .sign_external_body(&unsigned_body)
-        .map_err(|_| TonTransferError::MessageConstruction)?;
+    let signed_body = sign_external_body(wallet, &unsigned_body)?;
     let body_boc = signed_body
         .to_boc(true)
         .map_err(|_| TonTransferError::BocSerialization)?;
@@ -91,6 +89,31 @@ pub fn build_fee_estimate_request(
         init_code_boc,
         init_data_boc,
     })
+}
+
+/// Signs a W5 body without `tonlib-core`'s `nacl` signer.
+///
+/// `nacl 0.5.3` calculates SHA-512 lengths through `usize`, which is not
+/// portable to wasm32. Keep TON's cell serialization from `tonlib-core`, but
+/// use the already selected standard Ed25519 implementation for signatures.
+fn sign_external_body(
+    wallet: &TonWallet,
+    unsigned_body: &tonlib_core::cell::Cell,
+) -> Result<tonlib_core::cell::Cell, TonTransferError> {
+    let seed: &[u8; 32] = wallet
+        .key_pair
+        .secret_key
+        .get(..32)
+        .and_then(|seed| seed.try_into().ok())
+        .ok_or(TonTransferError::Signing)?;
+    let secret = SecretKey::from_bytes(seed).map_err(|_| TonTransferError::Signing)?;
+    let public = PublicKey::from(&secret);
+    if public.as_bytes() != wallet.key_pair.public_key.as_slice() {
+        return Err(TonTransferError::Signing);
+    }
+    let keypair = Keypair { secret, public };
+    let signature = keypair.sign(unsigned_body.cell_hash().as_slice());
+    VersionHelper::sign_msg(wallet.version, unsigned_body, signature.as_ref()).map_err(|_| TonTransferError::Signing)
 }
 
 fn validate_transfer_request(network: TonNetwork, request: &TonTransferRequest) -> Result<(), TonTransferError> {
@@ -140,6 +163,8 @@ pub enum TonTransferError {
     MessageConstruction,
     #[display(fmt = "Unable to serialize TON transfer BOC")]
     BocSerialization,
+    #[display(fmt = "Unable to sign TON transfer message")]
+    Signing,
     #[display(fmt = "Invalid TON transfer amount")]
     Amount,
 }
@@ -156,10 +181,13 @@ impl From<TonAmountError> for TonTransferError {
 mod tests {
     use super::*;
     use crate::ton::{TonAddressFormat, TonWalletParams};
+    use ed25519_dalek::{PublicKey, Signature, Verifier};
+    use std::convert::TryInto;
     use tonlib_core::tlb_types::{
         block::message::{CommonMsgInfo as BlockCommonMsgInfo, Message},
         tlb::TLB,
     };
+    use tonlib_core::wallet::versioned::v5::WalletExtMsgBodyV5;
 
     const SIGNING_SEED: [u8; 32] = [0x42; 32];
     const DESTINATION: &str = "UQBYGTsWwxh00p3Fq_EdwzQ2uRzuptfxP5crEOsfRT6zDOS4";
@@ -203,6 +231,26 @@ mod tests {
         assert!(!estimate.body_boc.is_empty());
         assert!(estimate.init_code_boc.is_some());
         assert!(estimate.init_data_boc.is_some());
+    }
+
+    #[test]
+    fn signed_w5_body_uses_a_verifiable_ed25519_signature() {
+        let wallet = TonWalletParams::MAINNET_DEFAULT
+            .wallet_from_seed(&SIGNING_SEED)
+            .unwrap();
+        let internal = build_internal_transfer(&request()).unwrap();
+        let unsigned = wallet
+            .create_external_body(1_700_000_000, 7, &[internal.to_arc()])
+            .unwrap();
+        let signed = sign_external_body(&wallet, &unsigned).unwrap();
+        let mut parser = signed.parser();
+        WalletExtMsgBodyV5::read(&mut parser).unwrap();
+        let signature: [u8; 64] = parser.load_bytes(64).unwrap().try_into().unwrap();
+        let signature = Signature::from_bytes(&signature).unwrap();
+        let public_key: [u8; 32] = wallet.key_pair.public_key.as_slice().try_into().unwrap();
+        let public = PublicKey::from_bytes(&public_key).unwrap();
+
+        public.verify(unsigned.cell_hash().as_slice(), &signature).unwrap();
     }
 
     #[test]

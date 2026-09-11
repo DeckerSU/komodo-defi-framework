@@ -727,6 +727,15 @@ Validation: `cargo +1.90.0 test --offline -p coins ton::wallet --lib` passed 3/3
 passed, and `wasm-pack build --release` completed with Rust 1.90. The production
 bundle was transferred to the web-wallet branch; its `npm run build` passed.
 
+W5 signature correction (2026-09-11): replacing only address derivation was
+insufficient because `tonlib-core 0.26.11` calls `nacl::sign::signature` inside
+`TonWallet::sign_external_body`. Replaying a KDF-produced BOC through Toncenter
+returned HTTP 500 with W5 exit code 135 at `CHKSIGNU`, proving that the BOC shape was
+valid but its signature was not. KDF now builds the unsigned body and StateInit with
+`tonlib-core`, signs the body cell hash with `ed25519-dalek`, and uses the library's
+public W5 wrapper helpers. A regression test parses the signed W5 body and verifies
+the detached signature against its public key before any network broadcast.
+
 Logout/history lifecycle fix (2026-09-11): browser logs showed that `MmCtx` and
 the `swap`/`ordermatch` IndexedDB instances were dropped after logout, while the
 wallet `tx_history` instance remained open. `CoinsContext` now listens for
