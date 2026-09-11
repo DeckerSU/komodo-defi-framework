@@ -736,6 +736,11 @@ valid but its signature was not. KDF now builds the unsigned body and StateInit 
 public W5 wrapper helpers. A regression test parses the signed W5 body and verifies
 the detached signature against its public key before any network broadcast.
 
+Native mainnet validation: a fresh Iguana-mode BOC sent `0.001 GRAM` to the
+disposable recipient and Toncenter accepted external message
+`0G/JZSmPUmy6jR6uTxfJ42FUwIbx8h2ZE8WKddL3IfA=`. The source balance changed
+from `0.104999999` to `0.103013860 GRAM`, confirming inclusion and the network fee.
+
 Logout/history lifecycle fix (2026-09-11): browser logs showed that `MmCtx` and
 the `swap`/`ordermatch` IndexedDB instances were dropped after logout, while the
 wallet `tx_history` instance remained open. `CoinsContext` now listens for
