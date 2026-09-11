@@ -32,9 +32,12 @@ impl From<TonFeeComponent> for TonFeeComponentDetails {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct TonTxFeeDetails {
     pub coin: String,
-    pub source: TonFeeComponentDetails,
+    /// Detailed components are available for a simulated withdrawal fee.
+    /// Historical account transactions expose only their total fee.
+    pub source: Option<TonFeeComponentDetails>,
     pub destinations: Vec<TonFeeComponentDetails>,
     pub total_fee: BigDecimal,
+    pub is_estimated: bool,
 }
 
 impl TonTxFeeDetails {
@@ -42,10 +45,21 @@ impl TonTxFeeDetails {
         let total_fee = big_decimal_from_sat_unsigned(estimate.source_total()?, TON_DECIMALS);
         Ok(TonTxFeeDetails {
             coin,
-            source: estimate.source.into(),
+            source: Some(estimate.source.into()),
             destinations: estimate.destinations.iter().copied().map(Into::into).collect(),
             total_fee,
+            is_estimated: true,
         })
+    }
+
+    pub fn from_actual_fee(coin: String, fee: u64) -> Self {
+        TonTxFeeDetails {
+            coin,
+            source: None,
+            destinations: Vec::new(),
+            total_fee: big_decimal_from_sat_unsigned(fee, TON_DECIMALS),
+            is_estimated: false,
+        }
     }
 }
 
@@ -72,6 +86,8 @@ mod tests {
 
         let details = TonTxFeeDetails::from_estimate("GRAM".to_owned(), &estimate).unwrap();
         assert_eq!(details.total_fee, big_decimal_from_sat_unsigned(10, TON_DECIMALS));
+        assert!(details.source.is_some());
+        assert!(details.is_estimated);
         assert_eq!(details.destinations.len(), 1);
     }
 }

@@ -5313,7 +5313,7 @@ pub async fn lp_coininit(ctx: &MmArc, ticker: &str, req: &Json) -> Result<MmCoin
         CoinProtocol::TON(_) => {
             let config = try_s!(ton::TonCoinConfig::from_json(coins_en.clone()));
             let params = try_s!(ton::TonActivationRequest::from_legacy_req(req));
-            try_s!(ton::TonCoin::activate(config, params, priv_key_policy).await).into()
+            try_s!(ton::TonCoin::activate_with_context(ctx, config, params, priv_key_policy).await).into()
         },
     };
 

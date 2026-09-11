@@ -539,25 +539,30 @@ fixtures and verify the deployed provider's compatibility with W5. [Estimate fee
 - [x] Add shared coin-level `send_raw_transaction` implementation; decode hex BOC,
   validate external-in message shape and broadcast the identical bytes through the primary
   endpoint exactly once. v2-specific route coverage and stricter BOC limits remain.
-- [ ] Track in-flight messages by wallet/seqno/message identity with bounded state.
-  Parallel withdrawal builds can target the same current seqno; document that they are
-  alternatives, not a guarantee of multiple executable transactions. Reject conflicting
-  pending sends and stale seqnos, or return a precise rebuild-required error.
-- [ ] A timeout after sending means unknown outcome. Reconcile using the exact message
-  reference and chain state; do not automatically sign a replacement transfer. Advancing
-  seqno alone does not prove that this particular payment succeeded.
-- [ ] Resolve normalized external-message hash to the included sender transaction and
-  inspect compute/action result plus the actual outgoing message. Follow recipient
-  execution/bounces before reporting delivered value. W5 send-mode error suppression
-  can leave seqno advanced without a successful transfer.
-- [ ] Define confirmation units using masterchain inclusion. Never subtract a shard
-  seqno or account logical time from masterchain height. Preserve shard/block/LT metadata.
-- [ ] Persist enough pending state to reconcile after restart; expire/cancel trackers
-  without claiming that local cancellation reverses an already submitted payment.
+- [x] Track one in-flight message per fixed W5 wallet by its exact external-message hash.
+  A second broadcast is rejected until the first has been reconciled, which is stricter
+  than only rejecting same-seqno messages and prevents concurrent W5 seqno races.
+  Parallel withdrawal builds remain alternatives, not a guarantee that both are executable.
+- [x] Treat a timeout after sending as an unknown outcome. Reconcile the exact message
+  hash against account transactions; never sign or broadcast a replacement automatically.
+  Advancing seqno alone is not treated as evidence of payment success.
+- [x] Resolve the normalized external-message hash to its incoming W5 transaction and
+  require successful compute/action phases. Inspect every value-carrying outgoing message
+  through the indexed incoming-recipient lookup; a recipient bounce or explicit failed
+  execution fails confirmation. W5 send-mode error suppression therefore cannot be
+  reported as a delivered payment.
+- [x] Define confirmations from the included transaction's masterchain sequence number.
+  Shard sequence numbers and account logical time are never used as confirmation heights.
+- [x] Persist the bounded unresolved-message tracker before broadcast in native KDF
+  activation storage, restore it before a subsequent broadcast, and reconcile it by exact
+  inbound hash. Local tracker removal is never presented as chain cancellation.
 
 Tests: successful send; malformed BOC; invalid signature; same-BOC retry; conflicting
 same-seqno messages; rejection; timeout-before/after acceptance; restart reconciliation;
 expired message; sender compute/action failure; recipient bounce; confirmation timeout.
+Focused unit coverage now includes message execution parsing, recipient-message metadata,
+hash normalization, single-wallet pending rejection, and restart tracker restoration.
+Provider-backed broadcast scenarios remain in M9's reproducible test harness.
 
 ### M7 — Transaction history, legacy and v2
 

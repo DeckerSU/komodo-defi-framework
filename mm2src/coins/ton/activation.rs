@@ -1,7 +1,8 @@
 use super::{
     build_fee_estimate_request, build_signed_transfer, TonAccountStateError, TonAccountTransaction, TonAddress,
     TonAmount, TonFeeEstimate, TonKeyPolicyError, TonProtocolInfo, TonRpcClientPool, TonRpcError, TonRpcNode,
-    TonSignedTransfer, TonSigningSeed, TonTransferError, TonTransferRequest, TonWalletError, TonWalletInformation,
+    TonSignedTransfer, TonSigningSeed, TonTransactionCursor, TonTransferError, TonTransferRequest, TonWalletError,
+    TonWalletInformation,
 };
 use crate::PrivKeyBuildPolicy;
 use derive_more::Display;
@@ -126,9 +127,6 @@ impl TonWalletContext {
         request: TonActivationRequest,
         key_policy: PrivKeyBuildPolicy,
     ) -> Result<Self, TonActivationError> {
-        if request.tx_history {
-            return Err(TonActivationError::TransactionHistoryUnsupported);
-        }
         let required_confirmations = request.required_confirmations.unwrap_or(config.required_confirmations);
         if required_confirmations == 0 {
             return Err(TonActivationError::InvalidRequiredConfirmations);
@@ -191,6 +189,18 @@ impl TonWalletContext {
         let address = self.address()?;
         self.rpc
             .account_transactions(&address, limit)
+            .await
+            .map_err(TonActivationError::Rpc)
+    }
+
+    pub async fn account_transactions_page(
+        &self,
+        limit: u8,
+        cursor: Option<&TonTransactionCursor>,
+    ) -> Result<Vec<TonAccountTransaction>, TonActivationError> {
+        let address = self.address()?;
+        self.rpc
+            .account_transactions_page(&address, limit, cursor)
             .await
             .map_err(TonActivationError::Rpc)
     }
@@ -314,14 +324,14 @@ pub enum TonActivationError {
     AmbiguousEndpoints,
     #[display(fmt = "TON activation nodes are invalid")]
     InvalidEndpoints,
-    #[display(fmt = "TON transaction history is not implemented")]
-    TransactionHistoryUnsupported,
     #[display(fmt = "Unable to select a TON wallet key source: {_0}")]
     KeyPolicy(TonKeyPolicyError),
     #[display(fmt = "Unable to construct TON wallet identity: {_0}")]
     WalletConstruction(TonWalletError),
     #[display(fmt = "Unable to initialize TON RPC: {_0}")]
     Rpc(TonRpcError),
+    #[display(fmt = "Unable to restore TON pending-message tracker: {_0}")]
+    PendingMessagePersistence(String),
     #[display(fmt = "TON account cannot be used: {_0}")]
     AccountState(TonAccountStateError),
     #[display(fmt = "Active TON account is not a compatible W5R1 wallet")]
@@ -444,17 +454,16 @@ mod tests {
     }
 
     #[test]
-    fn rejects_history_until_ton_history_is_implemented() {
+    fn accepts_history_for_the_cursor_based_history_worker() {
         let mut request = request();
         request.tx_history = true;
-        assert!(matches!(
-            TonWalletContext::new(
-                TonCoinConfig::from_json(config()).unwrap(),
-                request,
-                PrivKeyBuildPolicy::IguanaPrivKey(IguanaPrivKey::from([0x42; 32])),
-            ),
-            Err(TonActivationError::TransactionHistoryUnsupported)
-        ));
+        let context = TonWalletContext::new(
+            TonCoinConfig::from_json(config()).unwrap(),
+            request,
+            PrivKeyBuildPolicy::IguanaPrivKey(IguanaPrivKey::from([0x42; 32])),
+        )
+        .unwrap();
+        assert!(context.tx_history_enabled());
     }
 
     #[test]

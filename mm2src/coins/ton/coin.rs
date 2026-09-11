@@ -5,6 +5,8 @@ use super::{
 use crate::coin_errors::{AddressFromPubkeyError, MyAddressError};
 use crate::coin_errors::{ValidatePaymentError, ValidatePaymentResult};
 use crate::hd_wallet::HDAddressSelector;
+use crate::my_tx_history_v2::{CoinWithTxHistoryV2, MyTxHistoryErrorV2, MyTxHistoryTarget, TxHistoryStorage};
+use crate::tx_history_storage::{GetTxHistoryFilters, TxHistoryStorageBuilder, WalletId};
 use crate::utxo::utxo_common::big_decimal_from_sat_unsigned;
 use crate::{
     BalanceError, BalanceFut, CheckIfMyPaymentSentArgs, CoinBalance, ConfirmPaymentInput, DexFee, FoundSwapTxSpend,
@@ -33,7 +35,9 @@ use mm2_number::{BigDecimal, MmNumber};
 use parking_lot::Mutex;
 use rpc::v1::types::Bytes as BytesJson;
 use rpc::v1::types::H264 as H264Json;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -51,12 +55,22 @@ struct TonCoinFields {
     abortable_system: AbortableQueue,
     required_confirmations: AtomicU64,
     pending_messages: Mutex<HashSet<String>>,
+    pending_messages_path: Mutex<Option<PathBuf>>,
+    history_sync_state: Mutex<HistorySyncState>,
 }
 
 const TON_SWAP_UNSUPPORTED: &str = "TON atomic swaps are not supported; GRAM is wallet-only";
 const DEFAULT_TRANSFER_EXPIRATION_SECONDS: u64 = 60;
 const MAX_TRANSFER_EXPIRATION_SECONDS: u64 = 3_600;
 const ACCOUNT_TRANSACTION_LOOKBACK: u8 = 32;
+const HISTORY_PAGE_SIZE: u8 = 100;
+const MAX_HISTORY_PAGES_PER_SYNC: usize = 100;
+const HISTORY_SYNC_INTERVAL_SECONDS: f64 = 30.0;
+
+#[derive(Deserialize, Serialize)]
+struct PersistedPendingMessages {
+    message_hashes: Vec<String>,
+}
 
 fn unsupported_swap_transaction() -> TransactionResult {
     Err(TransactionErr::ProtocolNotSupported(TON_SWAP_UNSUPPORTED.to_owned()))
@@ -223,6 +237,10 @@ impl MarketCoinOps for TonCoin {
                 validate_external_boc(&boc)?;
                 let message_hash = external_message_hash(&boc)?;
                 coin.register_pending_message(&message_hash)?;
+                if let Err(error) = coin.persist_pending_messages().await {
+                    coin.remove_pending_message(&message_hash);
+                    return Err(error);
+                }
                 match coin.0.wallet.broadcast_boc(&boc).await {
                     Ok(reference) => Ok(reference),
                     Err(error) => {
@@ -234,6 +252,7 @@ impl MarketCoinOps for TonCoin {
                             TonActivationError::Rpc(super::TonRpcError::Timeout | super::TonRpcError::Transport)
                         ) {
                             coin.remove_pending_message(&message_hash);
+                            coin.persist_pending_messages().await?;
                         }
                         Err(error.to_string())
                     },
@@ -275,10 +294,53 @@ impl MarketCoinOps for TonCoin {
                             .await
                             .map_err(|error| error.to_string())?
                         {
-                            if !outcome.compute_success || !outcome.action_success || outcome.recipient_bounced {
+                            if outcome.compute_success != Some(true)
+                                || outcome.action_success != Some(true)
+                                || outcome.recipient_bounced
+                            {
                                 return Err(
                                     "TON message was included but execution or recipient delivery failed".to_owned()
                                 );
+                            }
+                            let transfer_messages: Vec<_> = outcome
+                                .outbound_messages
+                                .iter()
+                                .filter(|message| message.value != TonAmount::ZERO)
+                                .collect();
+                            if transfer_messages.is_empty() {
+                                return Err(
+                                    "TON wallet transaction created no value-carrying outgoing message".to_owned()
+                                );
+                            }
+                            let mut all_recipients_succeeded = true;
+                            for message in transfer_messages {
+                                let recipient = coin
+                                    .0
+                                    .wallet
+                                    .message_outcome(&message.hash)
+                                    .await
+                                    .map_err(|error| error.to_string())?;
+                                match recipient {
+                                    Some(recipient) if recipient.transaction_hash != outcome.transaction_hash => {
+                                        if recipient.compute_success == Some(false)
+                                            || recipient.action_success == Some(false)
+                                            || recipient.recipient_bounced
+                                        {
+                                            return Err(
+                                                "TON recipient transaction reported failed execution or a bounce"
+                                                    .to_owned(),
+                                            );
+                                        }
+                                    },
+                                    _ => all_recipients_succeeded = false,
+                                }
+                            }
+                            if !all_recipients_succeeded {
+                                if now_sec() >= input.wait_until {
+                                    return Err("Timed out waiting for TON recipient transaction execution".to_owned());
+                                }
+                                Timer::sleep(input.check_every as f64).await;
+                                continue;
                             }
                             let included_at = outcome.masterchain_seqno;
                             let current = coin.current_block_number().await.map_err(|error| error.to_string())?;
@@ -287,6 +349,7 @@ impl MarketCoinOps for TonCoin {
                                 .ok_or_else(|| "TON confirmation height overflow".to_owned())?;
                             if current >= required {
                                 coin.remove_pending_message(&message_hash);
+                                coin.persist_pending_messages().await?;
                                 return Ok(());
                             }
                         }
@@ -398,11 +461,28 @@ impl MmCoin for TonCoin {
             },
         }
     }
-    fn process_history_loop(&self, _ctx: mm2_core::mm_ctx::MmArc) -> Box<dyn Future<Item = (), Error = ()> + Send> {
-        Box::new(futures01::future::ok(()))
+    fn process_history_loop(&self, ctx: mm2_core::mm_ctx::MmArc) -> Box<dyn Future<Item = (), Error = ()> + Send> {
+        let storage = match TxHistoryStorageBuilder::new(&ctx).build() {
+            Ok(storage) => storage,
+            Err(error) => {
+                self.set_history_sync_state(HistorySyncState::Error(serde_json::json!({
+                    "message": format!("TON history storage initialization failed: {error}"),
+                })));
+                return Box::new(futures01::future::ok(()));
+            },
+        };
+        let coin = self.clone();
+        Box::new(
+            async move {
+                coin.history_loop(storage).await;
+                Ok(())
+            }
+            .boxed()
+            .compat(),
+        )
     }
     fn history_sync_status(&self) -> HistorySyncState {
-        HistorySyncState::NotEnabled
+        self.0.history_sync_state.lock().clone()
     }
     fn get_trade_fee(&self) -> Box<dyn Future<Item = TradeFee, Error = String> + Send> {
         Box::new(futures01::future::err(TON_SWAP_UNSUPPORTED.to_owned()))
@@ -470,11 +550,18 @@ impl TonCoin {
     ) -> Result<Self, TonActivationError> {
         let wallet = TonWalletContext::new(config, request, key_policy)?;
         let required_confirmations = wallet.required_confirmations();
+        let history_enabled = wallet.tx_history_enabled();
         Ok(TonCoin(Arc::new(TonCoinFields {
             wallet,
             abortable_system: AbortableQueue::default(),
             required_confirmations: AtomicU64::new(required_confirmations),
             pending_messages: Mutex::new(HashSet::new()),
+            pending_messages_path: Mutex::new(None),
+            history_sync_state: Mutex::new(if history_enabled {
+                HistorySyncState::NotStarted
+            } else {
+                HistorySyncState::NotEnabled
+            }),
         })))
     }
 
@@ -487,6 +574,23 @@ impl TonCoin {
     ) -> Result<Self, TonActivationError> {
         let coin = TonCoin::new(config, request, key_policy)?;
         coin.0.wallet.validate_account_state().await?;
+        Ok(coin)
+    }
+
+    /// Activates a KDF-managed TON wallet and restores its unresolved external
+    /// message tracker before any new BOC can be broadcast.
+    pub async fn activate_with_context(
+        ctx: &mm2_core::mm_ctx::MmArc,
+        config: TonCoinConfig,
+        request: TonActivationRequest,
+        key_policy: PrivKeyBuildPolicy,
+    ) -> Result<Self, TonActivationError> {
+        let coin = TonCoin::new(config, request, key_policy)?;
+        coin.initialize_pending_message_store(ctx).await?;
+        coin.0.wallet.validate_account_state().await?;
+        // Failure to query the newest account page must not discard an exact
+        // persisted message reference or make activation unavailable.
+        let _ = coin.reconcile_pending_messages().await;
         Ok(coin)
     }
 
@@ -521,6 +625,179 @@ impl TonCoin {
         self.0.wallet.account_transactions(limit).await
     }
 
+    pub fn history_wallet_id(&self) -> WalletId {
+        WalletId::new(self.ticker().to_owned())
+    }
+
+    fn set_history_sync_state(&self, state: HistorySyncState) {
+        *self.0.history_sync_state.lock() = state;
+    }
+
+    /// Fetches a bounded TON Center v2 history snapshot and stores only account
+    /// transactions whose serialized BOC is present. A provider that omits the
+    /// BOC cannot produce a truthful `TransactionData::Signed` record.
+    pub async fn sync_history_once<Storage>(&self, storage: &Storage) -> Result<usize, String>
+    where
+        Storage: TxHistoryStorage,
+    {
+        let wallet_id = self.history_wallet_id();
+        storage
+            .init(&wallet_id)
+            .await
+            .map_err(|error| format!("TON history storage initialization failed: {error:?}"))?;
+
+        let my_address = self.my_address().map_err(|error| error.to_string())?;
+        let mut cursor = None;
+        let mut added = 0;
+        for _ in 0..MAX_HISTORY_PAGES_PER_SYNC {
+            let transactions = self
+                .0
+                .wallet
+                .account_transactions_page(HISTORY_PAGE_SIZE, cursor.as_ref())
+                .await
+                .map_err(|error| error.to_string())?;
+            if transactions.is_empty() {
+                break;
+            }
+
+            let page_len = transactions.len();
+            let next_cursor = transactions.last().map(super::TonAccountTransaction::cursor);
+            let mut new_transactions = Vec::new();
+            for transaction in transactions {
+                let Some(details) = self
+                    .transaction_details_from_account_transaction(&my_address, transaction)
+                    .await?
+                else {
+                    continue;
+                };
+                let tx_hash = details
+                    .tx
+                    .tx_hash()
+                    .ok_or_else(|| "TON history details are missing the transaction hash".to_owned())?;
+                if !storage
+                    .history_has_tx_hash(&wallet_id, tx_hash)
+                    .await
+                    .map_err(|error| format!("TON history storage lookup failed: {error:?}"))?
+                {
+                    new_transactions.push(details);
+                }
+            }
+            added += new_transactions.len();
+            if !new_transactions.is_empty() {
+                storage
+                    .add_transactions_to_history(&wallet_id, new_transactions)
+                    .await
+                    .map_err(|error| format!("TON history storage write failed: {error:?}"))?;
+            }
+            if page_len < usize::from(HISTORY_PAGE_SIZE) {
+                break;
+            }
+            cursor = next_cursor;
+        }
+        Ok(added)
+    }
+
+    pub async fn history_loop<Storage>(&self, storage: Storage)
+    where
+        Storage: TxHistoryStorage,
+    {
+        loop {
+            self.set_history_sync_state(HistorySyncState::InProgress(serde_json::json!({})));
+            match self.sync_history_once(&storage).await {
+                Ok(_) => self.set_history_sync_state(HistorySyncState::Finished),
+                Err(error) => {
+                    self.set_history_sync_state(HistorySyncState::Error(serde_json::json!({ "message": error })));
+                    return;
+                },
+            }
+            Timer::sleep(HISTORY_SYNC_INTERVAL_SECONDS).await;
+        }
+    }
+
+    async fn transaction_details_from_account_transaction(
+        &self,
+        my_address: &str,
+        transaction: super::TonAccountTransaction,
+    ) -> Result<Option<TransactionDetails>, String> {
+        let Some(boc) = transaction.boc else { return Ok(None) };
+        let internal_id = ton_hash_bytes(&transaction.hash)?;
+        let inbound_height = match transaction.inbound_message_hash.as_deref() {
+            Some(message_hash) => self
+                .0
+                .wallet
+                .message_outcome(message_hash)
+                .await
+                .map_err(|error| error.to_string())?
+                .map(|outcome| outcome.masterchain_seqno),
+            None => None,
+        };
+
+        let mut from = HashSet::new();
+        let mut to = HashSet::new();
+        let mut received = TonAmount::ZERO;
+        if let Some(inbound) = transaction.inbound_message {
+            if let Some(source) = inbound.source {
+                from.insert(source);
+                if inbound
+                    .destination
+                    .as_deref()
+                    .map_or(false, |destination| ton_addresses_equal(destination, my_address))
+                {
+                    received = inbound.value;
+                }
+            }
+            if let Some(destination) = inbound.destination {
+                to.insert(destination);
+            }
+        }
+
+        let mut transferred = TonAmount::ZERO;
+        for outbound in transaction.outbound_messages {
+            if let Some(source) = outbound.source {
+                from.insert(source);
+            } else {
+                from.insert(my_address.to_owned());
+            }
+            if let Some(destination) = outbound.destination {
+                to.insert(destination);
+            }
+            transferred = transferred
+                .checked_add(outbound.value)
+                .map_err(|error| error.to_string())?;
+        }
+        let total_amount = received.checked_add(transferred).map_err(|error| error.to_string())?;
+        let spent = transferred
+            .checked_add(transaction.fee)
+            .map_err(|error| error.to_string())?;
+        let received_decimal = big_decimal_from_sat_unsigned(received.as_nano(), TON_DECIMALS);
+        let spent_decimal = big_decimal_from_sat_unsigned(spent.as_nano(), TON_DECIMALS);
+
+        let mut from: Vec<_> = from.into_iter().collect();
+        let mut to: Vec<_> = to.into_iter().collect();
+        from.sort();
+        to.sort();
+        Ok(Some(TransactionDetails {
+            tx: TransactionData::new_signed(BytesJson(boc), transaction.hash),
+            from,
+            to,
+            total_amount: big_decimal_from_sat_unsigned(total_amount.as_nano(), TON_DECIMALS),
+            spent_by_me: spent_decimal.clone(),
+            received_by_me: received_decimal.clone(),
+            my_balance_change: received_decimal - spent_decimal,
+            block_height: inbound_height.unwrap_or_default(),
+            timestamp: transaction.timestamp,
+            fee_details: Some(TxFeeDetails::Ton(TonTxFeeDetails::from_actual_fee(
+                self.ticker().to_owned(),
+                transaction.fee.as_nano(),
+            ))),
+            coin: self.ticker().to_owned(),
+            internal_id: BytesJson(internal_id),
+            kmd_rewards: None,
+            transaction_type: TransactionType::StandardTransfer,
+            memo: None,
+        }))
+    }
+
     fn register_pending_message(&self, message_hash: &str) -> Result<(), String> {
         let mut pending = self.0.pending_messages.lock();
         if !pending.is_empty() {
@@ -537,6 +814,57 @@ impl TonCoin {
         self.0.pending_messages.lock().remove(message_hash);
     }
 
+    async fn initialize_pending_message_store(&self, ctx: &mm2_core::mm_ctx::MmArc) -> Result<(), TonActivationError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let address = self
+                .my_address()
+                .map_err(|error| TonActivationError::PendingMessagePersistence(error.to_string()))?;
+            let path = ctx
+                .dbdir()
+                .join("TON_PENDING")
+                .join(format!("{}_{}.json", self.ticker(), address));
+            let messages = load_persisted_pending_messages(&path)
+                .await
+                .map_err(TonActivationError::PendingMessagePersistence)?;
+            if messages.len() > 1 || messages.iter().any(|hash| hash.is_empty() || hash.len() > 256) {
+                return Err(TonActivationError::PendingMessagePersistence(
+                    "invalid persisted TON pending-message tracker".to_owned(),
+                ));
+            }
+            *self.0.pending_messages.lock() = messages.into_iter().collect();
+            *self.0.pending_messages_path.lock() = Some(path);
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = ctx;
+        Ok(())
+    }
+
+    async fn persist_pending_messages(&self) -> Result<(), String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let path = self.0.pending_messages_path.lock().clone();
+            let Some(path) = path else { return Ok(()) };
+            let message_hashes = self.0.pending_messages.lock().iter().cloned().collect();
+            let content = serde_json::to_vec(&PersistedPendingMessages { message_hashes })
+                .map_err(|error| format!("could not serialize TON pending-message tracker: {error}"))?;
+            let parent = path
+                .parent()
+                .ok_or_else(|| "TON pending-message tracker has no parent directory".to_owned())?;
+            async_std::fs::create_dir_all(parent)
+                .await
+                .map_err(|error| format!("could not create TON pending-message directory: {error}"))?;
+            let temporary = path.with_extension("tmp");
+            async_std::fs::write(&temporary, content)
+                .await
+                .map_err(|error| format!("could not write TON pending-message tracker: {error}"))?;
+            async_std::fs::rename(&temporary, path)
+                .await
+                .map_err(|error| format!("could not replace TON pending-message tracker: {error}"))?;
+        }
+        Ok(())
+    }
+
     /// Removes locally pending external messages once their exact inbound
     /// message hash appears in the account's newest transactions. This is
     /// inclusion reconciliation only: it does not claim recipient execution
@@ -547,10 +875,18 @@ impl TonCoin {
             .iter()
             .filter_map(|transaction| transaction.inbound_message_hash.as_deref())
             .collect();
-        let mut pending = self.0.pending_messages.lock();
-        let before = pending.len();
-        pending.retain(|pending_hash| !observed.iter().any(|hash| ton_hashes_equal(pending_hash, hash)));
-        Ok(before - pending.len())
+        let removed = {
+            let mut pending = self.0.pending_messages.lock();
+            let before = pending.len();
+            pending.retain(|pending_hash| !observed.iter().any(|hash| ton_hashes_equal(pending_hash, hash)));
+            before - pending.len()
+        };
+        if removed != 0 {
+            self.persist_pending_messages()
+                .await
+                .map_err(TonActivationError::PendingMessagePersistence)?;
+        }
+        Ok(removed)
     }
 
     async fn build_withdraw(&self, req: WithdrawRequest) -> Result<TransactionDetails, MmError<WithdrawError>> {
@@ -705,6 +1041,33 @@ impl TonCoin {
     }
 }
 
+#[async_trait]
+impl CoinWithTxHistoryV2 for TonCoin {
+    fn history_wallet_id(&self) -> WalletId {
+        TonCoin::history_wallet_id(self)
+    }
+
+    async fn get_tx_history_filters(
+        &self,
+        target: MyTxHistoryTarget,
+    ) -> MmResult<GetTxHistoryFilters, MyTxHistoryErrorV2> {
+        match target {
+            MyTxHistoryTarget::Iguana | MyTxHistoryTarget::AccountId { account_id: 0 } => {
+                Ok(GetTxHistoryFilters::for_address(self.my_address().map_mm_err()?))
+            },
+            MyTxHistoryTarget::AddressId(path)
+                if path.account_id == 0 && path.address_id == 0 && path.chain == crypto::Bip44Chain::External =>
+            {
+                Ok(GetTxHistoryFilters::for_address(self.my_address().map_mm_err()?))
+            },
+            target => MmError::err(MyTxHistoryErrorV2::with_expected_target(
+                target,
+                "the fixed primary TON address",
+            )),
+        }
+    }
+}
+
 fn ensure_default_sender(sender: Option<&HDAddressSelector>) -> Result<(), MmError<WithdrawError>> {
     match sender {
         None => Ok(()),
@@ -780,6 +1143,33 @@ fn ton_hashes_equal(left: &str, right: &str) -> bool {
     matches!((decode(left), decode(right)), (Some(left), Some(right)) if left == right)
 }
 
+fn ton_hash_bytes(hash: &str) -> Result<Vec<u8>, String> {
+    hex::decode(hash)
+        .ok()
+        .or_else(|| BASE64.decode(hash).ok())
+        .or_else(|| URL_SAFE_NO_PAD.decode(hash).ok())
+        .filter(|bytes| !bytes.is_empty() && bytes.len() <= 256)
+        .ok_or_else(|| "TON provider returned an invalid transaction hash".to_owned())
+}
+
+fn ton_addresses_equal(left: &str, right: &str) -> bool {
+    match (TonAddress::parse(left), TonAddress::parse(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn load_persisted_pending_messages(path: &std::path::Path) -> Result<Vec<String>, String> {
+    match async_std::fs::read(path).await {
+        Ok(bytes) => serde_json::from_slice::<PersistedPendingMessages>(&bytes)
+            .map(|messages| messages.message_hashes)
+            .map_err(|error| error.to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -788,6 +1178,9 @@ mod tests {
         IguanaPrivKey, PrivKeyBuildPolicy,
     };
     use serde_json::json;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    use common::block_on;
 
     fn config() -> TonCoinConfig {
         TonCoinConfig::from_json(json!({
@@ -888,5 +1281,35 @@ mod tests {
         assert!(coin.register_pending_message("second-message").is_err());
         coin.remove_pending_message("first-message");
         assert!(coin.register_pending_message("second-message").is_ok());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn restores_an_unresolved_message_before_the_next_broadcast() {
+        let path = std::env::temp_dir().join(format!("kdf-ton-pending-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let coin = TonCoin::new(
+            config(),
+            request(),
+            PrivKeyBuildPolicy::IguanaPrivKey(IguanaPrivKey::from([0x42; 32])),
+        )
+        .unwrap();
+        *coin.0.pending_messages_path.lock() = Some(path.clone());
+        coin.register_pending_message("persisted-message").unwrap();
+        block_on(coin.persist_pending_messages()).unwrap();
+
+        let restored = TonCoin::new(
+            config(),
+            request(),
+            PrivKeyBuildPolicy::IguanaPrivKey(IguanaPrivKey::from([0x42; 32])),
+        )
+        .unwrap();
+        *restored.0.pending_messages_path.lock() = Some(path.clone());
+        *restored.0.pending_messages.lock() = block_on(load_persisted_pending_messages(&path))
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert!(restored.register_pending_message("replacement-message").is_err());
+        std::fs::remove_file(path).unwrap();
     }
 }

@@ -364,6 +364,7 @@ impl TonRpcClient {
         url.set_query(None);
         url.query_pairs_mut()
             .append_pair("msg_hash", message_hash)
+            .append_pair("direction", "in")
             .append_pair("limit", "1");
         let response = self.get(url).await?;
         parse_message_outcome(&response)
@@ -494,6 +495,9 @@ pub struct TonAccountTransaction {
     pub outbound_messages: Vec<TonTransactionMessage>,
     pub inbound_message_hash: Option<String>,
     pub outbound_message_hashes: Vec<String>,
+    /// Serialized account-transaction BOC when the v2 provider returns it.
+    /// This is an archival record, not an external BOC that can be rebroadcast.
+    pub boc: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -580,9 +584,16 @@ pub struct TonBroadcastResult {
 pub struct TonMessageOutcome {
     pub masterchain_seqno: u64,
     pub transaction_hash: String,
-    pub compute_success: bool,
-    pub action_success: bool,
+    pub compute_success: Option<bool>,
+    pub action_success: Option<bool>,
     pub recipient_bounced: bool,
+    pub outbound_messages: Vec<TonMessageOutcomeMessage>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TonMessageOutcomeMessage {
+    pub hash: String,
+    pub value: TonAmount,
 }
 
 #[derive(Clone, Debug, Display, Eq, PartialEq)]
@@ -760,7 +771,20 @@ fn parse_account_transaction(value: &Json) -> Result<TonAccountTransaction, TonR
         outbound_messages,
         inbound_message_hash,
         outbound_message_hashes,
+        boc: parse_optional_boc(value.get("data"))?,
     })
+}
+
+fn parse_optional_boc(value: Option<&Json>) -> Result<Option<Vec<u8>>, TonRpcError> {
+    match value {
+        None | Some(Json::Null) => Ok(None),
+        Some(Json::String(value)) if !value.is_empty() => {
+            let boc = BASE64.decode(value).map_err(|_| TonRpcError::InvalidResponse)?;
+            validate_boc(&boc)?;
+            Ok(Some(boc))
+        },
+        _ => Err(TonRpcError::InvalidResponse),
+    }
 }
 
 fn parse_transaction_message(value: &Json) -> Result<TonTransactionMessage, TonRpcError> {
@@ -837,12 +861,10 @@ fn parse_message_outcome(bytes: &[u8]) -> Result<Option<TonMessageOutcome>, TonR
             transaction_hash: parse_hash(transaction.get("hash"))?,
             compute_success: transaction
                 .pointer("/description/compute_ph/success")
-                .and_then(Json::as_bool)
-                == Some(true),
+                .and_then(Json::as_bool),
             action_success: transaction
                 .pointer("/description/action/success")
-                .and_then(Json::as_bool)
-                == Some(true),
+                .and_then(Json::as_bool),
             recipient_bounced: transaction
                 .get("out_msgs")
                 .and_then(Json::as_array)
@@ -851,7 +873,25 @@ fn parse_message_outcome(bytes: &[u8]) -> Result<Option<TonMessageOutcome>, TonR
                         .iter()
                         .any(|message| message.get("bounced").and_then(Json::as_bool) == Some(true))
                 })
-                .unwrap_or(false),
+                .unwrap_or(false)
+                || transaction.pointer("/in_msg/bounced").and_then(Json::as_bool) == Some(true),
+            outbound_messages: transaction
+                .get("out_msgs")
+                .and_then(Json::as_array)
+                .map(|messages| {
+                    messages
+                        .iter()
+                        .filter_map(|message| {
+                            let hash = parse_hash(message.get("hash")).ok()?;
+                            let value = parse_optional_u64(message.get("value")).ok()?;
+                            Some(TonMessageOutcomeMessage {
+                                hash,
+                                value: TonAmount::from_nano(value),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
         })),
     }
 }
@@ -894,6 +934,7 @@ mod tests {
         assert_eq!(transactions[0].inbound_message_hash.as_deref(), Some("inbound-hash"));
         assert_eq!(transactions[0].outbound_message_hashes, ["outbound-hash"]);
         assert_eq!(transactions[0].outbound_messages[0].value, TonAmount::from_nano(100));
+        assert_eq!(transactions[0].boc, None);
         assert_eq!(
             transactions[0].cursor(),
             TonTransactionCursor {
@@ -901,6 +942,16 @@ mod tests {
                 hash: "transaction-hash".to_owned(),
             }
         );
+    }
+
+    #[test]
+    fn retains_the_optional_serialized_account_transaction() {
+        let transactions = parse_account_transactions(
+            br#"{"ok":true,"result":[{"utime":1700000000,"transaction_id":{"lt":"123","hash":"transaction-hash"},"fee":"42","data":"AQID","in_msg":null,"out_msgs":[]}]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(transactions[0].boc, Some(vec![1, 2, 3]));
     }
 
     #[test]
@@ -965,16 +1016,23 @@ mod tests {
     #[test]
     fn parses_message_execution_outcome_from_v3() {
         let outcome = parse_message_outcome(
-            br#"{"transactions":[{"mc_block_seqno":42,"hash":"transaction-hash","description":{"compute_ph":{"success":true},"action":{"success":true}},"out_msgs":[{"bounced":false}]}]}"#,
+            br#"{"transactions":[{"mc_block_seqno":42,"hash":"transaction-hash","description":{"compute_ph":{"success":true},"action":{"success":true}},"out_msgs":[{"hash":"outbound-hash","value":"100","bounced":false}]}]}"#,
         )
         .unwrap()
         .unwrap();
 
         assert_eq!(outcome.masterchain_seqno, 42);
         assert_eq!(outcome.transaction_hash, "transaction-hash");
-        assert!(outcome.compute_success);
-        assert!(outcome.action_success);
+        assert_eq!(outcome.compute_success, Some(true));
+        assert_eq!(outcome.action_success, Some(true));
         assert!(!outcome.recipient_bounced);
+        assert_eq!(
+            outcome.outbound_messages,
+            vec![TonMessageOutcomeMessage {
+                hash: "outbound-hash".to_owned(),
+                value: TonAmount::from_nano(100),
+            }]
+        );
     }
 
     #[test]
@@ -982,12 +1040,12 @@ mod tests {
         assert_eq!(parse_message_outcome(br#"{"transactions":[]}"#), Ok(None));
 
         let outcome = parse_message_outcome(
-            br#"{"transactions":[{"mc_block_seqno":42,"hash":"transaction-hash","description":{"compute_ph":{"success":false},"action":{"success":false}},"out_msgs":[{"bounced":true}]}]}"#,
+            br#"{"transactions":[{"mc_block_seqno":42,"hash":"transaction-hash","description":{"compute_ph":{"success":false},"action":{"success":false}},"in_msg":{"bounced":true},"out_msgs":[{"bounced":true}]}]}"#,
         )
         .unwrap()
         .unwrap();
-        assert!(!outcome.compute_success);
-        assert!(!outcome.action_success);
+        assert_eq!(outcome.compute_success, Some(false));
+        assert_eq!(outcome.action_success, Some(false));
         assert!(outcome.recipient_bounced);
     }
 

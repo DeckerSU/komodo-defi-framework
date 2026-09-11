@@ -387,6 +387,7 @@ pub async fn my_tx_history_v2_rpc(
         MmCoinEnum::TendermintTokenVariant(tendermint_token) => {
             my_tx_history_v2_impl(ctx, &tendermint_token, request).await
         },
+        MmCoinEnum::TonCoinVariant(ton) => my_tx_history_v2_impl(ctx, &ton, request).await,
         other => MmError::err(MyTxHistoryErrorV2::NotSupportedFor(other.ticker().to_owned())),
     }
 }

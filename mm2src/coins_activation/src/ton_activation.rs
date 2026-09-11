@@ -10,7 +10,8 @@ use coins::coin_errors::MyAddressError;
 use coins::my_tx_history_v2::TxHistoryStorage;
 use coins::ton::{TonActivationRequest, TonCoin, TonCoinConfig, TonProtocolInfo};
 use coins::tx_history_storage::CreateTxHistoryStorageError;
-use coins::{BalanceError, CoinBalance, CoinProtocol, MarketCoinOps, PrivKeyBuildPolicy, RegisterCoinError};
+use coins::{BalanceError, CoinBalance, CoinProtocol, MarketCoinOps, MmCoin, PrivKeyBuildPolicy, RegisterCoinError};
+use common::executor::SpawnFuture;
 use crypto::hw_rpc_task::{HwRpcTaskAwaitingStatus, HwRpcTaskUserAction};
 use crypto::CryptoCtxError;
 use derive_more::Display;
@@ -201,7 +202,7 @@ impl InitStandaloneCoinActivationOps for TonCoin {
             ticker: ticker.clone(),
             error: error.to_string(),
         })?;
-        TonCoin::activate(config, activation_request.clone(), key_policy)
+        TonCoin::activate_with_context(&ctx, config, activation_request.clone(), key_policy)
             .await
             .map_to_mm(|error| TonCoinInitError::CoinCreationError {
                 ticker,
@@ -236,11 +237,11 @@ impl InitStandaloneCoinActivationOps for TonCoin {
     fn start_history_background_fetching(
         &self,
         _metrics: MetricsArc,
-        _storage: impl TxHistoryStorage,
+        storage: impl TxHistoryStorage,
         _streaming_manager: StreamingManager,
         _current_balances: HashMap<String, BigDecimal>,
     ) {
-        // `TonWalletContext` rejects `tx_history: true` until a cursor-based
-        // TON history implementation is available.
+        let coin = self.clone();
+        self.spawner().spawn(async move { coin.history_loop(storage).await });
     }
 }
