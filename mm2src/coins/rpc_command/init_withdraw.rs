@@ -1,8 +1,9 @@
-use crate::{lp_coinfind_or_err, CoinsContext, MmCoinEnum, WithdrawError};
+use crate::{lp_coinfind_or_err, CoinsContext, MmCoin, MmCoinEnum, WithdrawError};
 use crate::{TransactionDetails, WithdrawRequest};
 use async_trait::async_trait;
 use common::SuccessResponse;
 use crypto::hw_rpc_task::{HwRpcTaskAwaitingStatus, HwRpcTaskUserAction, HwRpcTaskUserActionRequest};
+use futures::compat::Future01CompatExt;
 use mm2_core::mm_ctx::MmArc;
 use mm2_err_handle::prelude::*;
 use rpc_task::rpc_common::{
@@ -147,6 +148,10 @@ impl RpcTask for WithdrawTask {
             MmCoinEnum::QtumCoinVariant(ref qtum) => qtum.init_withdraw(ctx, request, task_handle).await,
             MmCoinEnum::ZCoinVariant(ref z) => z.init_withdraw(ctx, request, task_handle).await,
             MmCoinEnum::EthCoinVariant(ref eth) => eth.init_withdraw(ctx, request, task_handle).await,
+            // TON uses the ordinary software-key withdrawal flow. It has no
+            // device interaction, so the task does not need to publish the
+            // hardware-specific intermediate statuses used by UTXO/EVM coins.
+            MmCoinEnum::TonCoinVariant(ref ton) => ton.withdraw(request).compat().await,
             _ => MmError::err(WithdrawError::CoinDoesntSupportInitWithdraw {
                 coin: self.coin.ticker().to_owned(),
             }),

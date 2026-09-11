@@ -519,9 +519,10 @@ scripts read it for activation. Record both repository revisions in the test man
 - [x] Implement `max` using a bounded convergence algorithm with conservative reserve
   semantics tied to estimated fees. Detect nonconvergence and insufficient balance.
   Never implement max-send by blindly using a wallet-destroying send mode.
-- [ ] Wire the common task `withdraw` lifecycle and add explicit TON metadata (seqno and
-  expiration) to the response. Legacy `withdraw` already returns a signed BOC hex,
-  message identifier, GRAM fee breakdown, and does not broadcast.
+- [x] Wire the common task `withdraw` lifecycle. TON software-key tasks reuse the same
+  signed-BOC flow without publishing hardware-device statuses. Add explicit seqno and
+  expiration metadata to the response in a follow-up; legacy and task withdrawals already
+  return a signed BOC hex, message identifier, GRAM fee breakdown, and do not broadcast.
 
 Tests: signature verification with a public fixture; decode every message field; first
 send vs deployed wallet; memo length/Unicode; expiration bounds/overflow; incorrect key;
