@@ -74,6 +74,29 @@ if [[ "$mode" == hd ]]; then
   test "$address" = "UQCLuOL1GAZuZbbhocUlGI3gxasW9HNK8zZpN7L-noXSF9l0"
 fi
 
+validated=$(rpc <<JSON
+{"userpass":"$userpass","method":"validateaddress","coin":"GRAM","address":"$address"}
+JSON
+)
+printf '%s' "$validated" | assert_json '.result.is_valid == true'
+invalid_address="${address%?}A"
+invalid_validated=$(rpc <<JSON
+{"userpass":"$userpass","method":"validateaddress","coin":"GRAM","address":"$invalid_address"}
+JSON
+)
+printf '%s' "$invalid_validated" | assert_json '.result.is_valid == false'
+converted=$(rpc <<JSON
+{"userpass":"$userpass","method":"convertaddress","coin":"GRAM","from":"$address","to_address_format":"Raw"}
+JSON
+)
+printf '%s' "$converted" | assert_json '.result.address | type == "string" and startswith("0:")'
+raw_address=$(printf '%s' "$converted" | jq -r '.result.address')
+raw_validated=$(rpc <<JSON
+{"userpass":"$userpass","method":"validateaddress","coin":"GRAM","address":"$raw_address"}
+JSON
+)
+printf '%s' "$raw_validated" | assert_json '.result.is_valid == true'
+
 # Register the SSE client before subscribing it to streamers. KDF's streaming
 # manager owns a single poller per coin and fans its events out to all clients.
 : >"$sse_file"
