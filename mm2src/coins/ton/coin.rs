@@ -3,18 +3,23 @@ use super::{
     TonWalletInformation, TON_DECIMALS,
 };
 use crate::coin_errors::{AddressFromPubkeyError, MyAddressError};
+use crate::coin_errors::{ValidatePaymentError, ValidatePaymentResult};
 use crate::hd_wallet::HDAddressSelector;
 use crate::utxo::utxo_common::big_decimal_from_sat_unsigned;
 use crate::{
-    BalanceError, BalanceFut, CoinBalance, ConfirmPaymentInput, MarketCoinOps, PrivKeyBuildPolicy, SignatureError,
-    SignatureResult, TransactionErr, TransactionResult, TxMarshalingErr, UnexpectedDerivationMethod, VerificationError,
-    VerificationResult, WaitForHTLCTxSpendArgs,
+    BalanceError, BalanceFut, CheckIfMyPaymentSentArgs, CoinBalance, ConfirmPaymentInput, DexFee, FoundSwapTxSpend,
+    MarketCoinOps, NegotiateSwapContractAddrErr, PrivKeyBuildPolicy, RefundPaymentArgs, SearchForSwapTxSpendInput,
+    SendPaymentArgs, SignatureError, SignatureResult, SpendPaymentArgs, SwapOps, TransactionErr, TransactionResult,
+    TxMarshalingErr, UnexpectedDerivationMethod, ValidateFeeArgs, ValidateOtherPubKeyErr, ValidatePaymentInput,
+    VerificationError, VerificationResult, WaitForHTLCTxSpendArgs,
 };
 use async_trait::async_trait;
 use futures::{FutureExt, TryFutureExt};
 use futures01::Future;
+use keys::KeyPair;
 use mm2_err_handle::prelude::*;
 use mm2_number::{BigDecimal, MmNumber};
+use rpc::v1::types::Bytes as BytesJson;
 use rpc::v1::types::H264 as H264Json;
 use std::sync::Arc;
 
@@ -29,6 +34,86 @@ pub struct TonCoin(Arc<TonCoinFields>);
 
 struct TonCoinFields {
     wallet: TonWalletContext,
+}
+
+const TON_SWAP_UNSUPPORTED: &str = "TON atomic swaps are not supported; GRAM is wallet-only";
+
+fn unsupported_swap_transaction() -> TransactionResult {
+    Err(TransactionErr::ProtocolNotSupported(TON_SWAP_UNSUPPORTED.to_owned()))
+}
+
+fn unsupported_swap_validation() -> ValidatePaymentResult<()> {
+    MmError::err(ValidatePaymentError::InvalidParameter(TON_SWAP_UNSUPPORTED.to_owned()))
+}
+
+#[async_trait]
+impl SwapOps for TonCoin {
+    async fn send_taker_fee(&self, _: DexFee, _: &[u8], _: u64) -> TransactionResult {
+        unsupported_swap_transaction()
+    }
+    async fn send_maker_payment(&self, _: SendPaymentArgs<'_>) -> TransactionResult {
+        unsupported_swap_transaction()
+    }
+    async fn send_taker_payment(&self, _: SendPaymentArgs<'_>) -> TransactionResult {
+        unsupported_swap_transaction()
+    }
+    async fn send_maker_spends_taker_payment(&self, _: SpendPaymentArgs<'_>) -> TransactionResult {
+        unsupported_swap_transaction()
+    }
+    async fn send_taker_spends_maker_payment(&self, _: SpendPaymentArgs<'_>) -> TransactionResult {
+        unsupported_swap_transaction()
+    }
+    async fn send_taker_refunds_payment(&self, _: RefundPaymentArgs<'_>) -> TransactionResult {
+        unsupported_swap_transaction()
+    }
+    async fn send_maker_refunds_payment(&self, _: RefundPaymentArgs<'_>) -> TransactionResult {
+        unsupported_swap_transaction()
+    }
+    async fn validate_fee(&self, _: ValidateFeeArgs<'_>) -> ValidatePaymentResult<()> {
+        unsupported_swap_validation()
+    }
+    async fn validate_maker_payment(&self, _: ValidatePaymentInput) -> ValidatePaymentResult<()> {
+        unsupported_swap_validation()
+    }
+    async fn validate_taker_payment(&self, _: ValidatePaymentInput) -> ValidatePaymentResult<()> {
+        unsupported_swap_validation()
+    }
+    async fn check_if_my_payment_sent(
+        &self,
+        _: CheckIfMyPaymentSentArgs<'_>,
+    ) -> Result<Option<crate::TransactionEnum>, String> {
+        Err(TON_SWAP_UNSUPPORTED.to_owned())
+    }
+    async fn search_for_swap_tx_spend_my(
+        &self,
+        _: SearchForSwapTxSpendInput<'_>,
+    ) -> Result<Option<FoundSwapTxSpend>, String> {
+        Err(TON_SWAP_UNSUPPORTED.to_owned())
+    }
+    async fn search_for_swap_tx_spend_other(
+        &self,
+        _: SearchForSwapTxSpendInput<'_>,
+    ) -> Result<Option<FoundSwapTxSpend>, String> {
+        Err(TON_SWAP_UNSUPPORTED.to_owned())
+    }
+    async fn extract_secret(&self, _: &[u8], _: &[u8]) -> Result<[u8; 32], String> {
+        Err(TON_SWAP_UNSUPPORTED.to_owned())
+    }
+    fn negotiate_swap_contract_addr(
+        &self,
+        _: Option<&[u8]>,
+    ) -> Result<Option<BytesJson>, MmError<NegotiateSwapContractAddrErr>> {
+        MmError::err(NegotiateSwapContractAddrErr::NoOtherAddrAndNoFallback)
+    }
+    fn derive_htlc_key_pair(&self, _: &[u8]) -> KeyPair {
+        KeyPair::default()
+    }
+    fn derive_htlc_pubkey(&self, _: &[u8]) -> [u8; 33] {
+        [0; 33]
+    }
+    fn validate_other_pubkey(&self, _: &[u8]) -> MmResult<(), ValidateOtherPubKeyErr> {
+        MmError::err(ValidateOtherPubKeyErr::InvalidPubKey(TON_SWAP_UNSUPPORTED.to_owned()))
+    }
 }
 
 #[async_trait]
