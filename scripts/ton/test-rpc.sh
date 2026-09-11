@@ -172,6 +172,17 @@ JSON
   fi
 fi
 
+disable_balance=$(rpc <<JSON
+{"mmrpc":"2.0","userpass":"$userpass","method":"stream::disable","params":{"client_id":1,"streamer_id":"BALANCE:GRAM"}}
+JSON
+)
+printf '%s' "$disable_balance" | assert_json '.result.result == "Success"'
+disable_history=$(rpc <<JSON
+{"mmrpc":"2.0","userpass":"$userpass","method":"stream::disable","params":{"client_id":1,"streamer_id":"TX_HISTORY:GRAM"}}
+JSON
+)
+printf '%s' "$disable_history" | assert_json '.result.result == "Success"'
+
 printf '{"mode":"%s","activation_api":"%s","address":"%s","send":%s,"message_hash":%s}\n' \
   "$mode" "$activation_api" "$address" "$([[ "$send" == --send ]] && echo true || echo false)" \
   "$(if [[ -n ${message_hash:-} ]]; then jq -Rn --arg value "$message_hash" '$value'; else echo null; fi)" \
