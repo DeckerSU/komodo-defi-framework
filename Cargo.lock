@@ -1020,6 +1020,7 @@ dependencies = [
  "mocktopus",
  "nacl",
  "nom",
+ "num-bigint",
  "num-traits",
  "parking_lot",
  "primitives",

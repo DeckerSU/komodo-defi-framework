@@ -6,10 +6,12 @@
 
 mod address;
 mod amount;
+mod transaction;
 mod wallet;
 
 pub use address::{TonAddress, TonAddressError, TonAddressFormat, TonNetwork};
 pub use amount::{TonAmount, TonAmountError};
+pub use transaction::{build_signed_transfer, TonSignedTransfer, TonTransferError, TonTransferRequest};
 pub use wallet::{TonSubwalletId, TonWalletError, TonWalletParams};
 
 pub const TON_DECIMALS: u8 = 9;

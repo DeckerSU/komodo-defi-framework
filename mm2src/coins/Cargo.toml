@@ -73,6 +73,7 @@ lazy_static.workspace = true
 libc.workspace = true
 nom.workspace = true
 nacl.workspace = true
+num-bigint.workspace = true
 mm2_core = { path = "../mm2_core" }
 mm2_err_handle = { path = "../mm2_err_handle" }
 mm2_event_stream = { path = "../mm2_event_stream" }

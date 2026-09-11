@@ -364,7 +364,7 @@ public-fixture development can continue but funded acceptance remains blocked.
   Support raw and valid standard/URL-safe friendly forms; validate CRC, tags and length.
   Reject testnet-only destination tags on mainnet; raw addresses use an explicit network
   context and a documented bounce default.
-- [ ] Implement Iguana raw-seed and HD mnemonic W5 construction and the private
+- [x] Implement Iguana raw-seed and HD mnemonic W5 construction and the private
   future-subwallet helper. Make public keys distinct from contract addresses.
 - [ ] Implement required coin/swap trait errors without `todo!`, `unimplemented!` or
   hidden panics. Gate trading even if `wallet_only` is omitted from input config.
@@ -713,6 +713,11 @@ Do not label an unavailable environment or unrun feature gate as a passed check.
 - Added exact nanoGRAM parsing, formatting and checked arithmetic. Its isolated
   source-linked suite ran **3 tests passed**, covering exact 9-decimal conversion,
   invalid precision/format and `u64` bounds without rounding.
+- Added a W5R1 transfer builder that creates the internal message and signed external
+  BOC, includes StateInit only for a deploy transfer, and reports the external message
+  cell hash distinctly from a transaction hash. The isolated source-linked suite now
+  runs **14 tests passed**, including internal recipient/amount/bounce preservation,
+  deploy BOC round trip, recipient network/bounce rejection, and a wasm32 check.
 - The source-linked primitive suite described above is the only KDF TON code validation so
   far. `cargo check --offline -p coins --lib` currently stops in the baseline `mm2_io`
   crate with 69 `std::io::Error: NotMmError` errors under the installed toolchain, before
