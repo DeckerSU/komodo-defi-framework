@@ -47,6 +47,7 @@ Abstraction layer for blockchain protocols. Defines traits for swaps, balances, 
 | QRC20 | `Qrc20Coin` | QRC20 tokens on Qtum |
 | EVM | `EthCoin` | ETH, MATIC, BNB |
 | TRON | `EthCoin` | TRX (wallet-only, via ChainSpec::Tron) |
+| TON | `TonCoin` | GRAM (wallet-only, W5R1) |
 | ERC20/NFT | `EthCoin` (token) | USDT, WBTC, NFTs |
 | Tendermint | `TendermintCoin` | ATOM, OSMO |
 | Tendermint Token | `TendermintToken` | IBC tokens |
@@ -109,6 +110,13 @@ See `coins_activation/AGENTS.md`. Activation traits (task-based `Init*` traits t
 - `ChainRpcClient::Tron`: Implements `ChainRpcOps` for balance, block, address-used checks
 - Wallet-only mode (no swap contracts yet)
 - HD activation via `enable_eth_with_tokens` / `task::enable_eth::*`
+
+### TON (ton/)
+- Native `TonCoin`; do not extend `EthCoin` because TON uses Ed25519, W5 contract addresses and BOC messages.
+- GRAM is the native TON currency and is wallet-only. Swaps and token activation are unsupported.
+- Iguana interprets the existing 32-byte KDF private-key material as an Ed25519 seed.
+- HD derives the normal KDF BIP39 seed via SLIP-10 `m/44'/607'/0'`; do not add a global TON mnemonic mode.
+- Expose only W5R1 subwallet 0 until recovery and discovery rules for additional TON wallets are specified.
 
 ### Tendermint (tendermint/)
 - IBC token transfers

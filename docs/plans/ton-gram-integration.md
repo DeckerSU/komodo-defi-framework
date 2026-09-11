@@ -402,7 +402,8 @@ subwallet counter uniqueness/bounds.
   (direct and task), `create_new_account`, and `scan_for_new_addresses` detect
   `TonCoinVariant` and return an explicit fixed-W5-address error in both Iguana and
   HD modes.
-- [ ] Update relevant AGENTS documentation for the TON HD path and single-address policy.
+- [x] Update `mm2src/coins/AGENTS.md` for the native TON coin type, KDF BIP39/SLIP-10
+  derivation policy, Iguana seed policy and fixed W5 address scope.
 
 Tests: valid BIP39 wallets retain their existing addresses and derive the documented
 GRAM vector; a native-TON-only mnemonic remains rejected by normal KDF HD startup;
