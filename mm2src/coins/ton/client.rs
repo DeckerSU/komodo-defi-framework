@@ -843,7 +843,11 @@ fn parse_transaction_message(value: &Json) -> Result<TonTransactionMessage, TonR
 fn parse_optional_address(value: Option<&Json>) -> Result<Option<String>, TonRpcError> {
     match value {
         None | Some(Json::Null) => Ok(None),
-        Some(Json::String(address)) if !address.trim().is_empty() => Ok(Some(address.to_owned())),
+        // Toncenter v2 represents the source of an external inbound message as
+        // an empty string. It is not an account address, so retain it as the
+        // absence of an address instead of rejecting the whole transaction.
+        Some(Json::String(address)) if address.trim().is_empty() => Ok(None),
+        Some(Json::String(address)) => Ok(Some(address.to_owned())),
         Some(Json::Object(address)) => address
             .get("account_address")
             .and_then(Json::as_str)
@@ -985,6 +989,22 @@ mod tests {
                 logical_time: "123".to_owned(),
                 hash: "transaction-hash".to_owned(),
             }
+        );
+    }
+
+    #[test]
+    fn accepts_an_external_message_with_an_empty_source_address() {
+        let transactions = parse_account_transactions(
+            br#"{"ok":true,"result":[{"utime":1700000000,"transaction_id":{"lt":"123","hash":"transaction-hash"},"fee":"42","in_msg":{"hash":"inbound-hash","source":"","destination":"wallet","value":"0"},"out_msgs":[]}]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            transactions[0]
+                .inbound_message
+                .as_ref()
+                .and_then(|message| message.source.as_deref()),
+            None
         );
     }
 

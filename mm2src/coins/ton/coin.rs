@@ -798,7 +798,6 @@ impl TonCoin {
                 Ok(_) => self.set_history_sync_state(HistorySyncState::Finished),
                 Err(error) => {
                     self.set_history_sync_state(HistorySyncState::Error(serde_json::json!({ "message": error })));
-                    return;
                 },
             }
             Timer::sleep(HISTORY_SYNC_INTERVAL_SECONDS).await;
@@ -812,13 +811,17 @@ impl TonCoin {
     ) -> Result<Option<TransactionDetails>, String> {
         let Some(boc) = transaction.boc else { return Ok(None) };
         let internal_id = ton_hash_bytes(&transaction.hash)?;
+        // The account-transaction page is sufficient to persist history. The
+        // v3 lookup only enriches it with a masterchain height, so a temporary
+        // indexing failure must not discard the entire page or stop syncing.
         let inbound_height = match transaction.inbound_message_hash.as_deref() {
             Some(message_hash) => self
                 .0
                 .wallet
                 .message_outcome(message_hash)
                 .await
-                .map_err(|error| error.to_string())?
+                .ok()
+                .flatten()
                 .map(|outcome| outcome.masterchain_seqno),
             None => None,
         };
