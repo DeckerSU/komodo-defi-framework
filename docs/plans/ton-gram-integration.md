@@ -370,8 +370,10 @@ public-fixture development can continue but funded acceptance remains blocked.
   future-subwallet helper. Make public keys distinct from contract addresses.
 - [ ] Implement required coin/swap trait errors without `todo!`, `unimplemented!` or
   hidden panics. `TonCoin` now owns the validated TON wallet identity as a separate
-  type; implement its mandatory traits and gate trading even if `wallet_only` is
-  omitted from input config.
+  type. Its `MarketCoinOps` now exposes the W5 address and native balance, while
+  unsupported raw-BOC, confirmation, HTLC, key-export and arbitrary-message methods
+  return explicit errors. Implement the remaining `MmCoin`/`SwapOps` traits and gate
+  trading even if `wallet_only` is omitted from input config.
 
 Tests: reference vectors, CRC corruption, tags, network/workchain changes, wallet-ID
 changes, invalid mnemonic redaction, max integer/decimal bounds, BOC round trips and

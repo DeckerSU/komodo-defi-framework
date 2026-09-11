@@ -1,7 +1,22 @@
 use super::{
-    TonActivationError, TonActivationRequest, TonAddress, TonCoinConfig, TonWalletContext, TonWalletInformation,
+    TonActivationError, TonActivationRequest, TonAddress, TonAddressFormat, TonCoinConfig, TonWalletContext,
+    TonWalletInformation, TON_DECIMALS,
 };
-use crate::PrivKeyBuildPolicy;
+use crate::coin_errors::{AddressFromPubkeyError, MyAddressError};
+use crate::hd_wallet::HDAddressSelector;
+use crate::utxo::utxo_common::big_decimal_from_sat_unsigned;
+use crate::{
+    BalanceError, BalanceFut, CoinBalance, ConfirmPaymentInput, MarketCoinOps, PrivKeyBuildPolicy, SignatureError,
+    SignatureResult, TransactionErr, TransactionResult, TxMarshalingErr, UnexpectedDerivationMethod, VerificationError,
+    VerificationResult, WaitForHTLCTxSpendArgs,
+};
+use async_trait::async_trait;
+use futures::compat::Future01CompatExt;
+use futures::FutureExt;
+use futures01::Future;
+use mm2_err_handle::prelude::*;
+use mm2_number::{BigDecimal, MmNumber};
+use rpc::v1::types::H264 as H264Json;
 use std::sync::Arc;
 
 /// Native GRAM wallet identity.
@@ -15,6 +30,133 @@ pub struct TonCoin(Arc<TonCoinFields>);
 
 struct TonCoinFields {
     wallet: TonWalletContext,
+}
+
+#[async_trait]
+impl MarketCoinOps for TonCoin {
+    fn ticker(&self) -> &str {
+        self.ticker()
+    }
+
+    fn my_address(&self) -> MmResult<String, MyAddressError> {
+        let network = self.0.wallet.protocol().network;
+        self.address()
+            .map(|address| {
+                address.format(
+                    TonAddressFormat::Friendly {
+                        bounceable: false,
+                        urlsafe: true,
+                    },
+                    network,
+                )
+            })
+            .map_err(|error| MyAddressError::InternalError(error.to_string()).into())
+    }
+
+    fn address_from_pubkey(&self, _pubkey: &H264Json) -> MmResult<String, AddressFromPubkeyError> {
+        MmError::err(AddressFromPubkeyError::InternalError(
+            "TON contract addresses cannot be derived from KDF's secp256k1 swap public key".to_owned(),
+        ))
+    }
+
+    async fn get_public_key(&self) -> Result<String, MmError<UnexpectedDerivationMethod>> {
+        MmError::err(UnexpectedDerivationMethod::ExpectedSingleAddress)
+    }
+
+    fn sign_message_hash(&self, _message: &str) -> Option<[u8; 32]> {
+        None
+    }
+
+    fn sign_message(&self, _message: &str, _address: Option<HDAddressSelector>) -> SignatureResult<String> {
+        MmError::err(SignatureError::InvalidRequest(
+            "TON arbitrary-message signing is not supported".to_owned(),
+        ))
+    }
+
+    fn verify_message(&self, _signature: &str, _message: &str, _address: &str) -> VerificationResult<bool> {
+        MmError::err(VerificationError::InvalidRequest(
+            "TON arbitrary-message verification is not supported".to_owned(),
+        ))
+    }
+
+    fn my_balance(&self) -> BalanceFut<CoinBalance> {
+        let coin = self.clone();
+        let future = async move {
+            let information = coin
+                .wallet_information()
+                .await
+                .map_err(|error| BalanceError::Transport(error.to_string()))?;
+            Ok(CoinBalance::new(big_decimal_from_sat_unsigned(
+                information.balance.as_nano(),
+                TON_DECIMALS,
+            )))
+        };
+        Box::new(future.boxed().compat())
+    }
+
+    fn platform_coin_balance(&self) -> BalanceFut<BigDecimal> {
+        Box::new(self.my_balance().map(|balance| balance.spendable))
+    }
+
+    fn platform_ticker(&self) -> &str {
+        self.ticker()
+    }
+
+    fn send_raw_tx(&self, _tx: &str) -> Box<dyn Future<Item = String, Error = String> + Send> {
+        Box::new(futures01::future::err(
+            "TON raw BOC broadcast validation is not implemented".to_owned(),
+        ))
+    }
+
+    fn send_raw_tx_bytes(&self, _tx: &[u8]) -> Box<dyn Future<Item = String, Error = String> + Send> {
+        Box::new(futures01::future::err(
+            "TON raw BOC broadcast validation is not implemented".to_owned(),
+        ))
+    }
+
+    fn wait_for_confirmations(&self, _input: ConfirmPaymentInput) -> Box<dyn Future<Item = (), Error = String> + Send> {
+        Box::new(futures01::future::err(
+            "TON confirmation tracking is not implemented".to_owned(),
+        ))
+    }
+
+    async fn wait_for_htlc_tx_spend(&self, _args: WaitForHTLCTxSpendArgs<'_>) -> TransactionResult {
+        Err(TransactionErr::ProtocolNotSupported(
+            "TON atomic swaps are not supported".to_owned(),
+        ))
+    }
+
+    fn tx_enum_from_bytes(&self, _bytes: &[u8]) -> Result<crate::TransactionEnum, MmError<TxMarshalingErr>> {
+        MmError::err(TxMarshalingErr::NotSupported(
+            "TON transaction decoding is not implemented".to_owned(),
+        ))
+    }
+
+    fn current_block(&self) -> Box<dyn Future<Item = u64, Error = String> + Send> {
+        Box::new(futures01::future::err(
+            "TON masterchain lookup is not implemented".to_owned(),
+        ))
+    }
+
+    fn display_priv_key(&self) -> Result<String, String> {
+        Err("TON private-key export is not supported".to_owned())
+    }
+
+    fn min_tx_amount(&self) -> BigDecimal {
+        big_decimal_from_sat_unsigned(1, TON_DECIMALS)
+    }
+
+    fn min_trading_vol(&self) -> MmNumber {
+        big_decimal_from_sat_unsigned(1, TON_DECIMALS).into()
+    }
+
+    fn should_burn_dex_fee(&self) -> bool {
+        false
+    }
+
+    fn is_trezor(&self) -> bool {
+        false
+    }
 }
 
 impl TonCoin {
