@@ -24,6 +24,7 @@ const MAX_TRANSACTION_PAGE_SIZE: u8 = 100;
 /// TON Center's anonymous API allowance is one request per second. A client
 /// supplied API key uses the provider's authenticated allowance instead.
 const PUBLIC_API_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
+const PUBLIC_RATE_LIMIT_RETRY_DELAY: Duration = Duration::from_secs(1);
 #[cfg(target_arch = "wasm32")]
 const TON_API_KEY_HEADER: &str = "X-API-Key";
 
@@ -377,47 +378,60 @@ impl TonRpcClient {
     }
 
     async fn get(&self, url: Url) -> Result<Vec<u8>, TonRpcError> {
-        self.throttle_public_request().await;
         #[cfg(not(target_arch = "wasm32"))]
         {
             use http::header::{HeaderName, HeaderValue};
             use mm2_net::transport::slurp_req;
 
-            let mut request = http::Request::builder()
-                .method(http::Method::GET)
-                .uri(url.as_str())
-                .body(Vec::new())
-                .map_err(|_| TonRpcError::InvalidEndpoint)?;
-            if let Some(api_key) = self.api_key.as_deref() {
-                let header = HeaderValue::from_str(api_key).map_err(|_| TonRpcError::InvalidApiKey)?;
-                request
-                    .headers_mut()
-                    .insert(HeaderName::from_static("x-api-key"), header);
-            }
+            for attempt in 0..2 {
+                self.throttle_public_request().await;
+                let mut request = http::Request::builder()
+                    .method(http::Method::GET)
+                    .uri(url.as_str())
+                    .body(Vec::new())
+                    .map_err(|_| TonRpcError::InvalidEndpoint)?;
+                if let Some(api_key) = self.api_key.as_deref() {
+                    let header = HeaderValue::from_str(api_key).map_err(|_| TonRpcError::InvalidApiKey)?;
+                    request
+                        .headers_mut()
+                        .insert(HeaderName::from_static("x-api-key"), header);
+                }
 
-            match Box::pin(slurp_req(request)).timeout(TON_RPC_TIMEOUT).await {
-                Ok(Ok((status, _headers, body))) if status.is_success() => Ok(body),
-                Ok(Ok((status, _headers, _body))) => Err(TonRpcError::HttpStatus(status.as_u16())),
-                Ok(Err(_)) => Err(TonRpcError::Transport),
-                Err(_) => Err(TonRpcError::Timeout),
+                match Box::pin(slurp_req(request)).timeout(TON_RPC_TIMEOUT).await {
+                    Ok(Ok((status, _headers, body))) if status.is_success() => return Ok(body),
+                    Ok(Ok((status, _headers, _body))) if status.as_u16() == 429 && attempt == 0 => {
+                        Timer::sleep(PUBLIC_RATE_LIMIT_RETRY_DELAY.as_secs_f64()).await;
+                    },
+                    Ok(Ok((status, _headers, _body))) => return Err(TonRpcError::HttpStatus(status.as_u16())),
+                    Ok(Err(_)) => return Err(TonRpcError::Transport),
+                    Err(_) => return Err(TonRpcError::Timeout),
+                }
             }
+            Err(TonRpcError::HttpStatus(429))
         }
 
         #[cfg(target_arch = "wasm32")]
         {
             use mm2_net::wasm::http::FetchRequest;
 
-            let mut request = FetchRequest::get(url.as_str()).cors();
-            if let Some(api_key) = self.api_key.as_deref() {
-                request = request.header(TON_API_KEY_HEADER, api_key);
-            }
+            for attempt in 0..2 {
+                self.throttle_public_request().await;
+                let mut request = FetchRequest::get(url.as_str()).cors();
+                if let Some(api_key) = self.api_key.as_deref() {
+                    request = request.header(TON_API_KEY_HEADER, api_key);
+                }
 
-            match Box::pin(request.request_str()).timeout(TON_RPC_TIMEOUT).await {
-                Ok(Ok((status, body))) if status.is_success() => Ok(body.into_bytes()),
-                Ok(Ok((status, _body))) => Err(TonRpcError::HttpStatus(status.as_u16())),
-                Ok(Err(_)) => Err(TonRpcError::Transport),
-                Err(_) => Err(TonRpcError::Timeout),
+                match Box::pin(request.request_str()).timeout(TON_RPC_TIMEOUT).await {
+                    Ok(Ok((status, body))) if status.is_success() => return Ok(body.into_bytes()),
+                    Ok(Ok((status, _body))) if status.as_u16() == 429 && attempt == 0 => {
+                        Timer::sleep(PUBLIC_RATE_LIMIT_RETRY_DELAY.as_secs_f64()).await;
+                    },
+                    Ok(Ok((status, _body))) => return Err(TonRpcError::HttpStatus(status.as_u16())),
+                    Ok(Err(_)) => return Err(TonRpcError::Transport),
+                    Err(_) => return Err(TonRpcError::Timeout),
+                }
             }
+            Err(TonRpcError::HttpStatus(429))
         }
     }
 
