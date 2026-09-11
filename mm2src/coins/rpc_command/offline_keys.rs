@@ -308,7 +308,13 @@ async fn offline_hd_keys_export_internal(
                     return MmError::err(OfflineKeysError::KeyDerivationFailed {
                         ticker: ticker.clone(),
                         error: "HD key derivation requires GlobalHDAccount mode. Please initialize with HD wallet."
-                            .to_string(),
+                        .to_string(),
+                    });
+                },
+                KeyPairPolicy::TonMnemonic(_) => {
+                    return MmError::err(OfflineKeysError::KeyDerivationFailed {
+                        ticker: ticker.clone(),
+                        error: "TON mnemonic sessions do not support BIP39 HD key export".to_string(),
                     });
                 },
             };
@@ -522,6 +528,12 @@ async fn offline_iguana_keys_export_internal(
                     return MmError::err(OfflineKeysError::KeyDerivationFailed {
                         ticker: ticker.clone(),
                         error: "Iguana key derivation requires Iguana mode".to_string(),
+                    });
+                },
+                KeyPairPolicy::TonMnemonic(_) => {
+                    return MmError::err(OfflineKeysError::KeyDerivationFailed {
+                        ticker: ticker.clone(),
+                        error: "TON mnemonic sessions do not expose an Iguana private key".to_string(),
                     });
                 },
             };

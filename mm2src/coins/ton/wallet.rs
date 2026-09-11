@@ -1,4 +1,5 @@
 use super::{TonAddress, TonNetwork};
+use crypto::TonMnemonicKey;
 use derive_more::Display;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::error::Error;
@@ -102,6 +103,11 @@ impl TonWalletParams {
             .map_err(|_| TonWalletError::WalletConstruction)
     }
 
+    /// Builds a W5R1 wallet from a native TON mnemonic key held by `CryptoCtx`.
+    pub fn wallet_from_ton_mnemonic_key(self, key: &TonMnemonicKey) -> Result<TonWallet, TonWalletError> {
+        self.wallet_from_seed(key.ed25519_seed())
+    }
+
     pub fn address_from_seed(self, seed: &[u8; 32]) -> Result<TonAddress, TonWalletError> {
         let wallet = self.wallet_from_seed(seed)?;
         Ok(TonAddress::from_inner(wallet.address))
@@ -109,6 +115,11 @@ impl TonWalletParams {
 
     pub fn address_from_mnemonic(self, mnemonic: &str) -> Result<TonAddress, TonWalletError> {
         let wallet = self.wallet_from_mnemonic(mnemonic)?;
+        Ok(TonAddress::from_inner(wallet.address))
+    }
+
+    pub fn address_from_ton_mnemonic_key(self, key: &TonMnemonicKey) -> Result<TonAddress, TonWalletError> {
+        let wallet = self.wallet_from_ton_mnemonic_key(key)?;
         Ok(TonAddress::from_inner(wallet.address))
     }
 }
@@ -157,6 +168,25 @@ mod tests {
         );
         assert_eq!(TonWalletParams::MAINNET_DEFAULT.wallet_id(), 0x7fff_ff11);
         assert_eq!(TonWalletParams::TESTNET_DEFAULT.wallet_id(), 0x7fff_fffd);
+    }
+
+    #[test]
+    fn native_ton_key_context_derives_the_w5_mainnet_vector() {
+        let key = TonMnemonicKey::from_mnemonic(TON_MNEMONIC_VECTOR).unwrap();
+        let address = TonWalletParams::MAINNET_DEFAULT
+            .address_from_ton_mnemonic_key(&key)
+            .unwrap();
+
+        assert_eq!(
+            address.format(
+                TonAddressFormat::Friendly {
+                    bounceable: false,
+                    urlsafe: true,
+                },
+                TonNetwork::Mainnet,
+            ),
+            TON_W5_MAINNET_VECTOR,
+        );
     }
 
     #[test]

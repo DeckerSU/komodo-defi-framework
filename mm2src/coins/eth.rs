@@ -1014,6 +1014,7 @@ impl EthPrivKeyBuildPolicy {
                 Ok(EthPrivKeyBuildPolicy::IguanaPrivKey(priv_key))
             },
             KeyPairPolicy::GlobalHDAccount(global_hd) => Ok(EthPrivKeyBuildPolicy::GlobalHDAccount(global_hd.clone())),
+            KeyPairPolicy::TonMnemonic(_) => Err(MmError::new(CryptoCtxError::TonMnemonicPolicy)),
         }
     }
 }

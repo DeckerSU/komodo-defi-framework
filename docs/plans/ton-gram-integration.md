@@ -224,9 +224,12 @@ bytes, or TON mnemonic derivation for that established behavior. Feed the result
 32 bytes to Ed25519, then construct W5R1. The seed-file helper normalizes the numbered
 file to the same canonical phrase string before both modes are launched.
 
-For HD, use native TON mnemonic validation and `to_key_pair()`. Do not fabricate a
-BIP44 path for a key that was not BIP44-derived. Model the public derivation metadata
-as native TON W5R1 with network/workchain/subwallet information.
+For HD, use the native TON mnemonic validation and derivation algorithm. Implement
+the small passwordless algorithm directly in `crypto` so that normalised words,
+validation seed, key material and temporary Ed25519 keypair buffers can be zeroized;
+verify it against the independent `tonlib-core` vector. Do not fabricate a BIP44 path
+for a key that was not BIP44-derived. Model the public derivation metadata as native
+TON W5R1 with network/workchain/subwallet information.
 
 Proposed startup contract:
 
@@ -375,8 +378,8 @@ subwallet counter uniqueness/bounds.
 
 ### M2 — Native TON mnemonic startup and single-address HD behavior
 
-- [ ] Implement the explicit mnemonic type and typed key context from section 3.1.
-- [ ] Reuse the decrypted phrase at the wallet initialization boundary; zeroize temporary
+- [x] Implement the explicit mnemonic type and typed key context from section 3.1.
+- [x] Reuse the decrypted phrase at the wallet initialization boundary; zeroize temporary
   buffers and sanitize library errors. Keep costly mnemonic derivation outside async
   executor hot paths, using established worker facilities where necessary.
 - [ ] Preserve named/encrypted wallet metadata and deterministic DB identity across restart.
@@ -724,8 +727,18 @@ Do not label an unavailable environment or unrun feature gate as a passed check.
   by legacy activation until the v2 TON activator is implemented. The source-linked
   suite now runs **17 tests passed**, including schema round trips and invalid
   version/subwallet/unknown-field checks, plus the wasm32 check.
-- The source-linked primitive suite described above is the only KDF TON code validation so
-  far. `cargo check --offline -p coins --lib` currently stops in the baseline `mm2_io`
+- Added `mnemonic_type: "ton"` HD startup selection and a separate
+  `KeyPairPolicy::TonMnemonic`. The native derivation implementation keeps only a
+  zeroizing 32-byte Ed25519 seed in the crypto context; BIP39-only coin builders and
+  offline key export report an explicit unsupported-policy error. A context key feeds
+  W5R1 construction and matches the public vector. The source-linked suite now runs
+  **18 tests passed**, and its separate crypto wrapper suite runs **2 tests passed**;
+  both compile for wasm32. Its disposable verifier also read the local numbered seed
+  and reproduced the public HD reference address without printing the phrase.
+- `cargo check --offline -p crypto --lib` reaches the existing `common` crate and stops
+  on six `chrono` feature errors (`Utc::now`, `Local` and `DelayedFormat`) under the
+  installed toolchain before `crypto` is checked. `cargo check --offline -p coins --lib`
+  currently stops in the baseline `mm2_io`
   crate with 69 `std::io::Error: NotMmError` errors under the installed toolchain, before
   `coins` can be checked. `cargo fmt --all -- --check` likewise reports only the existing
   import order in `mm2src/derives/enum_derives/src/from_stringify.rs`. GRAM RPC tests,

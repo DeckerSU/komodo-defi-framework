@@ -17,6 +17,7 @@ pub mod secret_hash_algo;
 mod shared_db_id;
 mod slip21;
 mod standard_hd_path;
+mod ton_mnemonic;
 mod xpub;
 
 #[cfg(target_arch = "wasm32")]
@@ -42,6 +43,7 @@ pub use mnemonic::{decrypt_mnemonic, encrypt_mnemonic, generate_mnemonic, Mnemon
 pub use standard_hd_path::{
     Bip44Chain, HDPathToAccount, HDPathToCoin, StandardHDPath, StandardHDPathError, UnknownChainError,
 };
+pub use ton_mnemonic::{TonMnemonicError, TonMnemonicKey, TonMnemonicKeyArc};
 pub use trezor;
 pub use xpub::{XPubConverter, XpubError};
 
