@@ -16,6 +16,8 @@ pub enum HDAccountBalanceRpcError {
     Timeout(Duration),
     #[display(fmt = "Coin is expected to be activated with the HD wallet derivation method")]
     CoinIsActivatedNotWithHDWallet,
+    #[display(fmt = "TON uses one fixed W5 wallet address and does not support address scanning")]
+    TonAddressScanningUnsupported,
     #[display(fmt = "HD account '{account_id}' is not activated")]
     UnknownAccount { account_id: u32 },
     #[display(fmt = "Coin doesn't support the given BIP44 chain: {chain:?}")]
@@ -39,6 +41,7 @@ impl HttpStatusCode for HDAccountBalanceRpcError {
         match self {
             HDAccountBalanceRpcError::NoSuchCoin { .. }
             | HDAccountBalanceRpcError::CoinIsActivatedNotWithHDWallet
+            | HDAccountBalanceRpcError::TonAddressScanningUnsupported
             | HDAccountBalanceRpcError::UnknownAccount { .. }
             | HDAccountBalanceRpcError::InvalidBip44Chain { .. }
             | HDAccountBalanceRpcError::ErrorDerivingAddress(_) => StatusCode::BAD_REQUEST,

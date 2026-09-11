@@ -55,6 +55,8 @@ pub enum CreateAccountRpcError {
     Timeout(Duration),
     #[display(fmt = "Coin is expected to be activated with the HD wallet derivation method")]
     CoinIsActivatedNotWithHDWallet,
+    #[display(fmt = "TON supports only its fixed W5 wallet account and address")]
+    TonAdditionalAccountsUnsupported,
     #[display(fmt = "Coin doesn't support the given BIP44 chain: {chain:?}")]
     InvalidBip44Chain { chain: Bip44Chain },
     #[display(fmt = "Accounts limit reached. Max number of accounts: {max_accounts_number}")]
@@ -160,6 +162,7 @@ impl HttpStatusCode for CreateAccountRpcError {
             | CreateAccountRpcError::NoSuchCoin { .. }
             | CreateAccountRpcError::UnexpectedUserAction { .. }
             | CreateAccountRpcError::CoinIsActivatedNotWithHDWallet
+            | CreateAccountRpcError::TonAdditionalAccountsUnsupported
             | CreateAccountRpcError::InvalidBip44Chain { .. }
             | CreateAccountRpcError::AccountLimitReached { .. } => StatusCode::BAD_REQUEST,
             CreateAccountRpcError::HwError(_) => StatusCode::GONE,
@@ -345,6 +348,7 @@ impl RpcTask for InitCreateAccountTask {
                 )
                 .await?,
             )),
+            MmCoinEnum::TonCoinVariant(_) => MmError::err(CreateAccountRpcError::TonAdditionalAccountsUnsupported),
             _ => MmError::err(CreateAccountRpcError::CoinIsActivatedNotWithHDWallet),
         }
     }

@@ -397,7 +397,10 @@ subwallet counter uniqueness/bounds.
   it does not yet persist wallet metadata or register a coin.
 - [ ] Preserve named/encrypted wallet metadata and deterministic DB identity across restart.
 - [ ] Wire account-balance and selector handling for the sole TON address.
-- [ ] Add unsupported-new-address/account/scan handling at both direct and task boundaries.
+- [x] Reject additional-address operations before any HD storage mutation. `get_new_address`
+  (direct and task), `create_new_account`, and `scan_for_new_addresses` detect
+  `TonCoinVariant` and return an explicit fixed-W5-address error in both Iguana and
+  HD modes.
 - [ ] Update relevant AGENTS documentation for the TON HD path and single-address policy.
 
 Tests: valid BIP39 wallets retain their existing addresses and derive the documented

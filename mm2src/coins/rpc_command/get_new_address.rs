@@ -55,6 +55,8 @@ pub enum GetNewAddressRpcError {
     UnexpectedUserAction { expected: String },
     #[display(fmt = "Coin is expected to be activated with the HD wallet derivation method")]
     CoinIsActivatedNotWithHDWallet,
+    #[display(fmt = "TON uses one fixed W5 wallet address and does not support additional HD addresses")]
+    TonAdditionalAddressesUnsupported,
     #[display(fmt = "HD account '{account_id}' is not activated")]
     UnknownAccount { account_id: u32 },
     #[display(fmt = "Coin doesn't support the given BIP44 chain: {chain:?}")]
@@ -200,6 +202,7 @@ impl HttpStatusCode for GetNewAddressRpcError {
             | GetNewAddressRpcError::NoSuchCoin { .. }
             | GetNewAddressRpcError::UnexpectedUserAction { .. }
             | GetNewAddressRpcError::CoinIsActivatedNotWithHDWallet
+            | GetNewAddressRpcError::TonAdditionalAddressesUnsupported
             | GetNewAddressRpcError::UnknownAccount { .. }
             | GetNewAddressRpcError::InvalidBip44Chain { .. }
             | GetNewAddressRpcError::ErrorDerivingAddress(_)
@@ -393,6 +396,7 @@ impl RpcTask for InitGetNewAddressTask {
                 )
                 .await?,
             )),
+            MmCoinEnum::TonCoinVariant(_) => MmError::err(GetNewAddressRpcError::TonAdditionalAddressesUnsupported),
             _ => MmError::err(GetNewAddressRpcError::CoinIsActivatedNotWithHDWallet),
         }
     }
@@ -414,6 +418,7 @@ pub async fn get_new_address(
         MmCoinEnum::EthCoinVariant(eth) => Ok(GetNewAddressResponseEnum::Map(
             eth.get_new_address_rpc_without_conf(req.params).await?,
         )),
+        MmCoinEnum::TonCoinVariant(_) => MmError::err(GetNewAddressRpcError::TonAdditionalAddressesUnsupported),
         _ => MmError::err(GetNewAddressRpcError::CoinIsActivatedNotWithHDWallet),
     }
 }

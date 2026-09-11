@@ -106,6 +106,7 @@ impl RpcTask for InitScanAddressesTask {
             MmCoinEnum::EthCoinVariant(ref eth) => Ok(ScanAddressesResponseEnum::Map(
                 eth.init_scan_for_new_addresses_rpc(self.req.params.clone()).await?,
             )),
+            MmCoinEnum::TonCoinVariant(_) => MmError::err(HDAccountBalanceRpcError::TonAddressScanningUnsupported),
             _ => MmError::err(HDAccountBalanceRpcError::CoinIsActivatedNotWithHDWallet),
         }
     }
