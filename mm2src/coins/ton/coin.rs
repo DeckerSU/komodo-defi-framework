@@ -441,6 +441,13 @@ impl TonCoin {
         self.0.wallet.current_block().await
     }
 
+    pub async fn account_transactions(
+        &self,
+        limit: u8,
+    ) -> Result<Vec<super::TonAccountTransaction>, TonActivationError> {
+        self.0.wallet.account_transactions(limit).await
+    }
+
     async fn build_withdraw(&self, req: WithdrawRequest) -> Result<TransactionDetails, MmError<WithdrawError>> {
         ensure_default_sender(req.from.as_ref())?;
         if req.fee.is_some() {

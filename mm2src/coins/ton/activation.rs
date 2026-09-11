@@ -1,7 +1,7 @@
 use super::{
-    build_fee_estimate_request, build_signed_transfer, TonAccountStateError, TonAddress, TonAmount, TonFeeEstimate,
-    TonKeyPolicyError, TonProtocolInfo, TonRpcClientPool, TonRpcError, TonRpcNode, TonSignedTransfer, TonSigningSeed,
-    TonTransferError, TonTransferRequest, TonWalletError, TonWalletInformation,
+    build_fee_estimate_request, build_signed_transfer, TonAccountStateError, TonAccountTransaction, TonAddress,
+    TonAmount, TonFeeEstimate, TonKeyPolicyError, TonProtocolInfo, TonRpcClientPool, TonRpcError, TonRpcNode,
+    TonSignedTransfer, TonSigningSeed, TonTransferError, TonTransferRequest, TonWalletError, TonWalletInformation,
 };
 use crate::PrivKeyBuildPolicy;
 use derive_more::Display;
@@ -183,6 +183,16 @@ impl TonWalletContext {
 
     pub async fn current_block(&self) -> Result<u64, TonActivationError> {
         self.rpc.current_block().await.map_err(TonActivationError::Rpc)
+    }
+
+    /// Retrieves a bounded newest-first snapshot for a future history or
+    /// confirmation worker. It does not enable persistence by itself.
+    pub async fn account_transactions(&self, limit: u8) -> Result<Vec<TonAccountTransaction>, TonActivationError> {
+        let address = self.address()?;
+        self.rpc
+            .account_transactions(&address, limit)
+            .await
+            .map_err(TonActivationError::Rpc)
     }
 
     /// Broadcasts a previously signed external BOC exactly once through the
