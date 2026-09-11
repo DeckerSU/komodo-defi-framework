@@ -448,8 +448,18 @@ pub struct TonAccountTransaction {
     pub hash: String,
     pub timestamp: u64,
     pub fee: TonAmount,
+    pub inbound_message: Option<TonTransactionMessage>,
+    pub outbound_messages: Vec<TonTransactionMessage>,
     pub inbound_message_hash: Option<String>,
     pub outbound_message_hashes: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TonTransactionMessage {
+    pub hash: String,
+    pub source: Option<String>,
+    pub destination: Option<String>,
+    pub value: TonAmount,
 }
 
 /// The cursor required by TON Center v2 account pagination. The provider
@@ -676,25 +686,61 @@ fn parse_account_transaction(value: &Json) -> Result<TonAccountTransaction, TonR
     let hash = parse_hash(id.get("hash"))?;
     let timestamp = parse_u64(value.get("utime"))?;
     let fee = TonAmount::from_nano(parse_u64(value.get("fee"))?);
-    let inbound_message_hash = value
+    let inbound_message = value
         .get("in_msg")
-        .map(|message| parse_hash(message.get("hash")))
+        .filter(|message| !message.is_null())
+        .map(parse_transaction_message)
         .transpose()?;
-    let outbound_message_hashes = value
+    let outbound_messages = value
         .get("out_msgs")
         .and_then(Json::as_array)
         .ok_or(TonRpcError::InvalidResponse)?
         .iter()
-        .map(|message| parse_hash(message.get("hash")))
+        .map(parse_transaction_message)
         .collect::<Result<Vec<_>, _>>()?;
+    let inbound_message_hash = inbound_message.as_ref().map(|message| message.hash.clone());
+    let outbound_message_hashes = outbound_messages.iter().map(|message| message.hash.clone()).collect();
     Ok(TonAccountTransaction {
         logical_time,
         hash,
         timestamp,
         fee,
+        inbound_message,
+        outbound_messages,
         inbound_message_hash,
         outbound_message_hashes,
     })
+}
+
+fn parse_transaction_message(value: &Json) -> Result<TonTransactionMessage, TonRpcError> {
+    Ok(TonTransactionMessage {
+        hash: parse_hash(value.get("hash"))?,
+        source: parse_optional_address(value.get("source"))?,
+        destination: parse_optional_address(value.get("destination"))?,
+        value: TonAmount::from_nano(parse_optional_u64(value.get("value"))?),
+    })
+}
+
+fn parse_optional_address(value: Option<&Json>) -> Result<Option<String>, TonRpcError> {
+    match value {
+        None | Some(Json::Null) => Ok(None),
+        Some(Json::String(address)) if !address.trim().is_empty() => Ok(Some(address.to_owned())),
+        Some(Json::Object(address)) => address
+            .get("account_address")
+            .and_then(Json::as_str)
+            .filter(|address| !address.trim().is_empty())
+            .map(str::to_owned)
+            .map(Some)
+            .ok_or(TonRpcError::InvalidResponse),
+        _ => Err(TonRpcError::InvalidResponse),
+    }
+}
+
+fn parse_optional_u64(value: Option<&Json>) -> Result<u64, TonRpcError> {
+    match value {
+        None | Some(Json::Null) => Ok(0),
+        value => parse_u64(value),
+    }
 }
 
 fn parse_decimal_string(value: Option<&Json>) -> Result<String, TonRpcError> {
@@ -757,13 +803,14 @@ mod tests {
 
     #[test]
     fn parses_newest_first_account_transactions_without_losing_wire_identifiers() {
-        let transactions = parse_account_transactions(br#"{"ok":true,"result":[{"utime":1700000000,"transaction_id":{"lt":"123","hash":"transaction-hash"},"fee":"42","in_msg":{"hash":"inbound-hash"},"out_msgs":[{"hash":"outbound-hash"}]}]}"#).unwrap();
+        let transactions = parse_account_transactions(br#"{"ok":true,"result":[{"utime":1700000000,"transaction_id":{"lt":"123","hash":"transaction-hash"},"fee":"42","in_msg":{"hash":"inbound-hash","source":null,"destination":"wallet","value":"0"},"out_msgs":[{"hash":"outbound-hash","source":"wallet","destination":"recipient","value":"100"}]}]}"#).unwrap();
 
         assert_eq!(transactions.len(), 1);
         assert_eq!(transactions[0].logical_time, "123");
         assert_eq!(transactions[0].fee, TonAmount::from_nano(42));
         assert_eq!(transactions[0].inbound_message_hash.as_deref(), Some("inbound-hash"));
         assert_eq!(transactions[0].outbound_message_hashes, ["outbound-hash"]);
+        assert_eq!(transactions[0].outbound_messages[0].value, TonAmount::from_nano(100));
         assert_eq!(
             transactions[0].cursor(),
             TonTransactionCursor {
