@@ -393,10 +393,13 @@ fails without changing storage.
 
 ### M3 — Async network client and activation/balance
 
-- [ ] Implement a narrow async Toncenter client using `mm2_net` facilities. Validate
-  endpoint configuration, redact API keys, and use `X-API-Key` headers.
-- [ ] Typed calls: wallet/account information, `seqno`/get-method fallback when needed,
-  masterchain head and the fee/broadcast/history calls required by later milestones.
+- [x] Implement the initial narrow async Toncenter v2 client using `mm2_net`. It validates
+  a credential-free `/api/v2` endpoint, keeps API keys in zeroizing storage, uses
+  `X-API-Key`, and applies a request deadline on native and WASM transports.
+- [x] Add typed `getWalletInformation` parsing for balance, account state, wallet type
+  and optional seqno. Never coerce an absent active-account seqno to zero.
+- [ ] Add a get-method seqno fallback, masterchain head, fee, broadcast and history calls
+  as their consuming milestones land.
 - [ ] Distinguish nonexist/uninitialized, active, frozen and unknown states. Only the
   first two imply fresh StateInit; active accounts need compatible W5 state and seqno.
 - [ ] Add request deadlines, bounded retries/backoff, cancellation, endpoint failover
@@ -730,6 +733,11 @@ Do not label an unavailable environment or unrun feature gate as a passed check.
   and `KeyPairPolicy::TonMnemonic` were removed after the derivation-policy review:
   they would prevent a native-TON-only phrase from deriving existing KDF HD coins.
   KDF now keeps its normal BIP39 startup for all coins.
+- Added an asynchronous TON Center v2 client for `getWalletInformation`. It validates
+  the endpoint shape, sends dynamic API-key headers on native and WASM transports,
+  bounds the request duration, preserves an absent active-account seqno as `None`, and
+  parses nanoGRAM balances without floats. Its HTTP transport is not yet connected to
+  activation; failover, retry/rate-limit policy, fees, broadcast and history remain M3–M7 work.
 - Added TEP-3 multichain GRAM derivation at `m/44'/607'/0'` from the existing
   `GlobalHDAccountCtx`, with a public BIP39 seed→Ed25519 seed→non-bounceable W5R1
   test vector. The control BIP39 phrase is stored outside the repository in a
