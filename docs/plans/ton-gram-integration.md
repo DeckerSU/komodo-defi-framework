@@ -429,11 +429,13 @@ fails without changing storage.
   Do not turn provider errors into zero balances. Verify selected endpoints/network using
   a supported network identity check.
 - [ ] Implement immediate/task activation and balance; expose actual normalized address,
-  network, wallet version, key mode and supported capabilities. `TonWalletContext`
-  now validates the native GRAM configuration (`wallet_only`, 9 decimals, TON/W5
-  parameters), combines it with one KDF key policy and a bounded RPC pool without
-  registration side effects. Register only after successful initialization; clean up
-  partial/cancelled activation.
+  network, wallet version, key mode and supported capabilities. The legacy v1 `enable`
+  path now accepts exactly one explicit `nodes` or `rpc_nodes` array, validates the
+  native GRAM configuration and KDF key policy, fetches wallet information before
+  registration, and allows only deployable or correctly sequenced active accounts.
+  `tx_history: true` is rejected until history exists. The task (v2) endpoint, a typed
+  activation result, W5 code/state verification, cancellation integration, and a
+  capability response remain.
 - [ ] Add feature-gated network tests following `tron-network-tests`; ordinary tests
   use deterministic HTTP fixtures/mock servers without funded credentials.
 

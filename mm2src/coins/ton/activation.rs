@@ -1,6 +1,6 @@
 use super::{
-    TonAddress, TonKeyPolicyError, TonProtocolInfo, TonRpcClientPool, TonRpcError, TonRpcNode, TonSigningSeed,
-    TonWalletError, TonWalletInformation,
+    TonAccountStateError, TonAddress, TonKeyPolicyError, TonProtocolInfo, TonRpcClientPool, TonRpcError, TonRpcNode,
+    TonSigningSeed, TonWalletError, TonWalletInformation,
 };
 use crate::PrivKeyBuildPolicy;
 use derive_more::Display;
@@ -70,6 +70,32 @@ pub struct TonActivationRequest {
     pub tx_history: bool,
 }
 
+impl TonActivationRequest {
+    /// Extracts the TON-specific fields from the legacy `enable` request.
+    ///
+    /// `nodes` is preferred; `rpc_nodes` is also accepted so the node section
+    /// from the companion `coins/ton/GRAM` artifact can be passed unchanged.
+    /// The static coin entry intentionally contains no provider endpoint or
+    /// credential, therefore an activation without nodes is rejected.
+    pub fn from_legacy_req(req: &Json) -> Result<Self, TonActivationError> {
+        let nodes = match (req.get("nodes"), req.get("rpc_nodes")) {
+            (Some(_), Some(_)) => return Err(TonActivationError::AmbiguousEndpoints),
+            (Some(nodes), None) | (None, Some(nodes)) => {
+                json::from_value(nodes.clone()).map_err(|_| TonActivationError::InvalidEndpoints)?
+            },
+            (None, None) => return Err(TonActivationError::MissingEndpoints),
+        };
+        let required_confirmations = json::from_value(req["required_confirmations"].clone())
+            .map_err(|_| TonActivationError::InvalidRequiredConfirmations)?;
+
+        Ok(TonActivationRequest {
+            nodes,
+            required_confirmations,
+            tx_history: req["tx_history"].as_bool().unwrap_or(false),
+        })
+    }
+}
+
 /// Wallet identity and RPC access created before registering a TON coin.
 ///
 /// This context owns the zeroizing signing seed. It has no side effects: the
@@ -89,6 +115,9 @@ impl TonWalletContext {
         request: TonActivationRequest,
         key_policy: PrivKeyBuildPolicy,
     ) -> Result<Self, TonActivationError> {
+        if request.tx_history {
+            return Err(TonActivationError::TransactionHistoryUnsupported);
+        }
         let required_confirmations = request.required_confirmations.unwrap_or(config.required_confirmations);
         if required_confirmations == 0 {
             return Err(TonActivationError::InvalidRequiredConfirmations);
@@ -140,6 +169,14 @@ impl TonWalletContext {
             .await
             .map_err(TonActivationError::Rpc)
     }
+
+    /// Checks the account state before a coin is registered. An uninitialized
+    /// account is valid: its first W5 transfer will deploy the wallet contract.
+    pub async fn validate_account_state(&self) -> Result<TonWalletInformation, TonActivationError> {
+        let information = self.wallet_information().await?;
+        information.transfer_state().map_err(TonActivationError::AccountState)?;
+        Ok(information)
+    }
 }
 
 #[derive(Debug, Display, Eq, PartialEq)]
@@ -152,12 +189,22 @@ pub enum TonActivationError {
     UnsupportedProtocol,
     #[display(fmt = "TON required confirmations must be greater than zero")]
     InvalidRequiredConfirmations,
+    #[display(fmt = "TON activation requires a non-empty nodes or rpc_nodes array")]
+    MissingEndpoints,
+    #[display(fmt = "TON activation must use either nodes or rpc_nodes, not both")]
+    AmbiguousEndpoints,
+    #[display(fmt = "TON activation nodes are invalid")]
+    InvalidEndpoints,
+    #[display(fmt = "TON transaction history is not implemented")]
+    TransactionHistoryUnsupported,
     #[display(fmt = "Unable to select a TON wallet key source: {_0}")]
     KeyPolicy(TonKeyPolicyError),
     #[display(fmt = "Unable to construct TON wallet identity: {_0}")]
     WalletConstruction(TonWalletError),
     #[display(fmt = "Unable to initialize TON RPC: {_0}")]
     Rpc(TonRpcError),
+    #[display(fmt = "TON account cannot be used: {_0}")]
+    AccountState(TonAccountStateError),
 }
 
 impl Error for TonActivationError {}
@@ -195,6 +242,28 @@ mod tests {
             required_confirmations: None,
             tx_history: false,
         }
+    }
+
+    #[test]
+    fn extracts_exactly_one_legacy_node_source() {
+        let request = TonActivationRequest::from_legacy_req(&json::json!({
+            "rpc_nodes": [{"url": "https://toncenter.com/api/v2"}],
+            "required_confirmations": 2,
+        }))
+        .unwrap();
+        assert_eq!(request.nodes.len(), 1);
+        assert_eq!(request.required_confirmations, Some(2));
+
+        assert!(matches!(
+            TonActivationRequest::from_legacy_req(&json::json!({})),
+            Err(TonActivationError::MissingEndpoints)
+        ));
+        assert!(matches!(
+            TonActivationRequest::from_legacy_req(&json::json!({
+                "nodes": [], "rpc_nodes": []
+            })),
+            Err(TonActivationError::AmbiguousEndpoints)
+        ));
     }
 
     #[test]
@@ -243,5 +312,19 @@ mod tests {
             ),
             "UQA_O1iT-mrBM2FBjVKUiM9O6Qv--yzmD9F8bIXS3aq6jrad",
         );
+    }
+
+    #[test]
+    fn rejects_history_until_ton_history_is_implemented() {
+        let mut request = request();
+        request.tx_history = true;
+        assert!(matches!(
+            TonWalletContext::new(
+                TonCoinConfig::from_json(config()).unwrap(),
+                request,
+                PrivKeyBuildPolicy::IguanaPrivKey(IguanaPrivKey::from([0x42; 32])),
+            ),
+            Err(TonActivationError::TransactionHistoryUnsupported)
+        ));
     }
 }

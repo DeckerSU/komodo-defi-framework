@@ -384,6 +384,18 @@ impl TonCoin {
         })))
     }
 
+    /// Builds the coin and verifies that its account state can safely be used
+    /// for a future W5 transfer before it is registered in `CoinsContext`.
+    pub async fn activate(
+        config: TonCoinConfig,
+        request: TonActivationRequest,
+        key_policy: PrivKeyBuildPolicy,
+    ) -> Result<Self, TonActivationError> {
+        let coin = TonCoin::new(config, request, key_policy)?;
+        coin.0.wallet.validate_account_state().await?;
+        Ok(coin)
+    }
+
     pub fn ticker(&self) -> &str {
         self.0.wallet.ticker()
     }

@@ -5310,7 +5310,11 @@ pub async fn lp_coininit(ctx: &MmArc, ticker: &str, req: &Json) -> Result<MmCoin
         },
         CoinProtocol::SOLANA(_) => return ERR!("SOLANA is not supported by lp_coininit"),
         CoinProtocol::SOLANATOKEN(_) => return ERR!("SOLANATOKEN is not supported by lp_coininit"),
-        CoinProtocol::TON(_) => return ERR!("TON is not supported by lp_coininit"),
+        CoinProtocol::TON(_) => {
+            let config = try_s!(ton::TonCoinConfig::from_json(coins_en.clone()));
+            let params = try_s!(ton::TonActivationRequest::from_legacy_req(req));
+            try_s!(ton::TonCoin::activate(config, params, priv_key_policy).await).into()
+        },
     };
 
     let register_params = RegisterCoinParams {
