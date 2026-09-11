@@ -24,6 +24,9 @@ nodes=$(jq -cn --arg url "$ton_node" --arg api_key "$ton_api_key" \
 rpc() {
   curl --fail --silent --show-error --connect-timeout 5 --max-time 30 --url "$rpc_url" --data @-
 }
+rpc_allow_error() {
+  curl --silent --show-error --connect-timeout 5 --max-time 30 --url "$rpc_url" --data @-
+}
 assert_json() { jq -e "$1" >/dev/null; }
 
 if [[ "$activation_api" == legacy ]]; then
@@ -31,8 +34,8 @@ enable=$(rpc <<JSON
 {"userpass":"$userpass","method":"enable","coin":"GRAM","nodes":$nodes,"tx_history":true}
 JSON
 )
-printf '%s' "$enable" | assert_json '.result.address | type == "string"'
-address=$(printf '%s' "$enable" | jq -r '.result.address')
+printf '%s' "$enable" | assert_json '.address | type == "string"'
+address=$(printf '%s' "$enable" | jq -r '.address')
 else
   init=$(rpc <<JSON
 {"mmrpc":"2.0","userpass":"$userpass","method":"enable_ton","params":{"ticker":"GRAM","activation_params":{"nodes":$nodes,"tx_history":true}}}
@@ -43,7 +46,7 @@ JSON
   status=''
   for _ in $(seq 1 30); do
     status=$(rpc <<JSON
-{"mmrpc":"2.0","userpass":"$userpass","method":"enable_ton::status","params":{"task_id":$task_id,"forget_if_finished":false}}
+{"mmrpc":"2.0","userpass":"$userpass","method":"task::enable_ton::status","params":{"task_id":$task_id,"forget_if_finished":false}}
 JSON
 )
     printf '%s' "$status" | assert_json '.result.status | type == "string"'
@@ -82,6 +85,7 @@ JSON
 )
 printf '%s' "$v2_history" | assert_json '.result.transactions | type == "array"'
 
+if printf '%s' "$balance" | jq -e '.balance | tonumber >= 0.001' >/dev/null; then
 unsigned_withdraw=$(rpc <<JSON
 {"userpass":"$userpass","method":"withdraw","coin":"GRAM","to":"$address","amount":"0.001","broadcast":false,"expiration_seconds":60}
 JSON
@@ -95,6 +99,17 @@ if [[ "$send" == --send ]]; then
 JSON
 )
   printf '%s' "$broadcast" | assert_json '.tx_hash | type == "string"'
+fi
+else
+  insufficient_balance=$(rpc_allow_error <<JSON
+{"userpass":"$userpass","method":"withdraw","coin":"GRAM","to":"$address","amount":"0.001","broadcast":false,"expiration_seconds":60}
+JSON
+)
+  printf '%s' "$insufficient_balance" | assert_json '.error | type == "string"'
+  if [[ "$send" == --send ]]; then
+    echo "cannot use --send with an unfunded GRAM address" >&2
+    exit 1
+  fi
 fi
 
 mkdir -p "$script_dir/results"
