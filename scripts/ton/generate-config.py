@@ -46,6 +46,11 @@ def main() -> int:
         "is_bootstrap_node": True,
         "myipaddr": "127.0.0.1",
         "rpcip": "127.0.0.1",
+        # Enable the native SSE endpoint used by the balance and history
+        # streaming checks. The runtime listens on loopback only.
+        "event_streaming_configuration": {
+            "access_control_allow_origin": "http://127.0.0.1",
+        },
     }
     destination = Path(config_file)
     destination.parent.mkdir(parents=True, exist_ok=True)

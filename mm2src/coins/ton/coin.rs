@@ -828,10 +828,11 @@ impl TonCoin {
 
         let mut from = HashSet::new();
         let mut to = HashSet::new();
+        let network = self.0.wallet.protocol().network;
         let mut received = TonAmount::ZERO;
         if let Some(inbound) = transaction.inbound_message {
             if let Some(source) = inbound.source {
-                from.insert(source);
+                from.insert(canonical_history_address(source, network));
                 if inbound
                     .destination
                     .as_deref()
@@ -841,19 +842,19 @@ impl TonCoin {
                 }
             }
             if let Some(destination) = inbound.destination {
-                to.insert(destination);
+                to.insert(canonical_history_address(destination, network));
             }
         }
 
         let mut transferred = TonAmount::ZERO;
         for outbound in transaction.outbound_messages {
             if let Some(source) = outbound.source {
-                from.insert(source);
+                from.insert(canonical_history_address(source, network));
             } else {
                 from.insert(my_address.to_owned());
             }
             if let Some(destination) = outbound.destination {
-                to.insert(destination);
+                to.insert(canonical_history_address(destination, network));
             }
             transferred = transferred
                 .checked_add(outbound.value)
@@ -1253,6 +1254,24 @@ fn ton_addresses_equal(left: &str, right: &str) -> bool {
     }
 }
 
+/// One TON account has several friendly encodings. History filters use KDF's
+/// canonical non-bounceable URL-safe encoding, so normalize provider message
+/// addresses before saving them. Retain an unexpected provider string rather
+/// than dropping the transaction entirely.
+fn canonical_history_address(address: String, network: super::TonNetwork) -> String {
+    TonAddress::parse(&address)
+        .map(|address| {
+            address.format(
+                TonAddressFormat::Friendly {
+                    bounceable: false,
+                    urlsafe: true,
+                },
+                network,
+            )
+        })
+        .unwrap_or(address)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 async fn load_persisted_pending_messages(path: &std::path::Path) -> Result<Vec<String>, String> {
     match async_std::fs::read(path).await {
@@ -1360,6 +1379,23 @@ mod tests {
         assert!(ton_hashes_equal(&hex::encode(raw), &BASE64.encode(raw)));
         assert!(ton_hashes_equal(&hex::encode(raw), &URL_SAFE_NO_PAD.encode(raw)));
         assert!(!ton_hashes_equal(&hex::encode(raw), &hex::encode([0xcdu8; 32])));
+    }
+
+    #[test]
+    fn normalizes_bounceable_provider_addresses_for_history_filters() {
+        let canonical = "UQBYGTsWwxh00p3Fq_EdwzQ2uRzuptfxP5crEOsfRT6zDOS4";
+        let provider_address = TonAddress::parse(canonical).unwrap().format(
+            TonAddressFormat::Friendly {
+                bounceable: true,
+                urlsafe: true,
+            },
+            TonNetwork::Mainnet,
+        );
+
+        assert_eq!(
+            canonical_history_address(provider_address, TonNetwork::Mainnet),
+            canonical
+        );
     }
 
     #[test]

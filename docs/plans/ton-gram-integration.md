@@ -598,6 +598,12 @@ the whole page. History continues after a transient page or v3 height-enrichment
 failure and retries on the next interval; durable cursor/finality/accounting work
 remains open.
 
+Progress (2026-09-11): Toncenter message addresses can be bounceable `EQ…`, while
+KDF's fixed wallet representation is non-bounceable `UQ…`. History normalizes parsed
+addresses to the configured network's URL-safe non-bounceable form before persistence,
+so account filters locate the same TON account rather than treating friendly encodings
+as different wallets.
+
 ### M8 — Balance and transaction-history streaming
 
 - [x] Add TON transaction-history streaming to the existing activation path and use the coin's abortable
@@ -607,8 +613,14 @@ remains open.
   an independent poller per subscriber or unbounded queues.
 - [ ] Support initial balance and later changes, transaction discovery/status updates,
   multiple clients, unsubscribe, disable, shutdown and catch-up through history RPC.
-- [ ] Prefer the existing polling/history worker as the first event source. Provider
+- [x] Prefer the existing polling/history worker as the first event source. Provider
   streaming is optional and must not be necessary for KDF streaming to work.
+
+Progress (2026-09-11): GRAM now has a bounded shared balance poller (15 seconds by
+default; configurable only between 1 and 3600 seconds). It emits an initial balance
+and subsequent changes through the existing manager, which shares one poller among
+subscribers and shuts it down after the last unsubscribe. Failed reads emit an error
+event and do not fabricate a zero balance.
 
 Tests: attach client before subscription, streamer IDs, no duplicate worker, event
 contents vs history, bounded slow-client behavior, unsubscribe, reconnect/catch-up,
@@ -642,13 +654,13 @@ integration-runs/ton-gram/
   processing. Use `umask 077`, private config permissions, loopback RPC, generated RPC
   password and separate ports/DBs. Put JSON in files, not a secret-bearing argv.
   Do not enable shell tracing or copy `seed.txt` into the package.
-- [ ] Configure native SSE using the existing event-stream configuration schema. Check
+- [x] Configure native SSE using the existing event-stream configuration schema. Check
   startup readiness with bounded retries; trap exit/signals and shut down only the
   process started by the script. Never use global `killall kdf`.
 - [x] Implement assertions using curl and jq, not only demonstrations that print responses.
   Set connect/request/polling timeouts, propagate failures with nonzero exit status and
   redact credentials. Exit zero only when all selected tests pass; report skips distinctly.
-- [ ] Provide a default read-only suite and an explicit `--send` suite. The requested
+- [x] Provide a default read-only suite and an explicit `--send` suite. The requested
   final implementation validation includes sending; ordinary reruns must not spend
   funds silently. Use a fixed small amount, explicit destination and fee/spend cap.
   Max-send and insufficient-balance tests build/mock only; never drain the funded wallet.

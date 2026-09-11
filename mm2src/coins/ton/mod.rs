@@ -7,6 +7,7 @@
 mod activation;
 mod address;
 mod amount;
+mod balance_events;
 mod client;
 mod coin;
 mod fee;
@@ -20,6 +21,7 @@ mod wallet;
 pub use activation::{TonActivationError, TonActivationRequest, TonCoinConfig, TonPreparedTransfer, TonWalletContext};
 pub use address::{TonAddress, TonAddressError, TonAddressFormat, TonNetwork};
 pub use amount::{TonAmount, TonAmountError};
+pub use balance_events::TonBalanceEventStreamer;
 pub use client::{
     TonAccountState, TonAccountTransaction, TonBroadcastResult, TonFeeComponent, TonFeeEstimate, TonFeeEstimateRequest,
     TonMessageOutcome, TonMessageOutcomeMessage, TonRpcClient, TonRpcClientPool, TonRpcError, TonRpcNode,

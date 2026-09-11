@@ -3,6 +3,7 @@ use super::{EnableStreamingRequest, EnableStreamingResponse};
 
 use coins::eth::eth_balance_events::EthBalanceEventStreamer;
 use coins::tendermint::tendermint_balance_events::TendermintBalanceEventStreamer;
+use coins::ton::TonBalanceEventStreamer;
 use coins::utxo::utxo_balance_events::UtxoBalanceEventStreamer;
 use coins::z_coin::z_balance_streaming::ZCoinBalanceEventStreamer;
 use coins::{lp_coinfind, MmCoin, MmCoinEnum};
@@ -52,7 +53,7 @@ pub async fn enable_balance(
         .ok_or(BalanceStreamingRequestError::CoinNotFound)?;
 
     match coin {
-        MmCoinEnum::EthCoinVariant(_) => (),
+        MmCoinEnum::EthCoinVariant(_) | MmCoinEnum::TonCoinVariant(_) => (),
         MmCoinEnum::ZCoinVariant(_)
         | MmCoinEnum::UtxoCoinVariant(_)
         | MmCoinEnum::BchVariant(_)
@@ -91,6 +92,11 @@ pub async fn enable_balance(
         },
         MmCoinEnum::TendermintVariant(coin) => {
             let streamer = TendermintBalanceEventStreamer::new(coin.clone());
+            ctx.event_stream_manager.add(client_id, streamer, coin.spawner()).await
+        },
+        MmCoinEnum::TonCoinVariant(coin) => {
+            let streamer = TonBalanceEventStreamer::try_new(req.config, coin.clone())
+                .map_to_mm(BalanceStreamingRequestError::EnableError)?;
             ctx.event_stream_manager.add(client_id, streamer, coin.spawner()).await
         },
         _ => Err(BalanceStreamingRequestError::CoinNotSupported)?,
