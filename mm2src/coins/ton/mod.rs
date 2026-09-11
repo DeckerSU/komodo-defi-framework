@@ -10,6 +10,7 @@ mod client;
 mod hd;
 mod key;
 mod protocol;
+mod state;
 mod transaction;
 mod wallet;
 
@@ -21,6 +22,7 @@ pub use client::{
 pub use hd::{derive_ton_hd_seed, TonHdDerivationError, TON_MULTICHAIN_DERIVATION_PATH};
 pub use key::{TonKeyPolicyError, TonSigningSeed};
 pub use protocol::{TonProtocolInfo, TonWalletVersion};
+pub use state::{TonAccountStateError, TonTransferState};
 pub use transaction::{build_signed_transfer, TonSignedTransfer, TonTransferError, TonTransferRequest};
 pub use wallet::{TonSubwalletId, TonWalletError, TonWalletParams};
 
