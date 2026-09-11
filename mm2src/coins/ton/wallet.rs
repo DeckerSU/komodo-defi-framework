@@ -1,9 +1,9 @@
 use super::{TonAddress, TonNetwork};
 use derive_more::Display;
+use ed25519_dalek::{PublicKey, SecretKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::error::Error;
 use tonlib_core::wallet::{mnemonic::KeyPair, ton_wallet::TonWallet, wallet_version::WalletVersion};
-use zeroize::Zeroize;
 
 const W5_CONTEXT_CLIENT: u32 = 1 << 31;
 const W5_CONTEXT_WORKCHAIN_SHIFT: u32 = 23;
@@ -80,12 +80,15 @@ impl TonWalletParams {
     ///
     /// Iguana mode supplies this seed from its existing 32-byte private key.
     pub fn wallet_from_seed(self, seed: &[u8; 32]) -> Result<TonWallet, TonWalletError> {
-        let mut keypair = nacl::sign::generate_keypair(seed);
+        let secret = SecretKey::from_bytes(seed).map_err(|_| TonWalletError::KeyConstruction)?;
+        let public = PublicKey::from(&secret);
+        let mut secret_key = Vec::with_capacity(64);
+        secret_key.extend_from_slice(secret.as_bytes());
+        secret_key.extend_from_slice(public.as_bytes());
         let key_pair = KeyPair {
-            public_key: keypair.pkey.to_vec(),
-            secret_key: keypair.skey.to_vec(),
+            public_key: public.to_bytes().to_vec(),
+            secret_key,
         };
-        keypair.skey.zeroize();
         TonWallet::new_with_params(WalletVersion::V5R1, key_pair, self.workchain as i32, self.wallet_id())
             .map_err(|_| TonWalletError::WalletConstruction)
     }
@@ -102,6 +105,8 @@ pub enum TonWalletError {
     InvalidSubwalletId(u16),
     #[display(fmt = "Unable to construct TON W5R1 wallet")]
     WalletConstruction,
+    #[display(fmt = "Unable to construct TON Ed25519 key material")]
+    KeyConstruction,
 }
 
 impl Error for TonWalletError {}
@@ -131,7 +136,7 @@ mod tests {
     }
 
     #[test]
-    fn iguana_key_construction_derives_its_own_w5_address() {
+    fn iguana_key_construction_uses_standard_ed25519() {
         let key_pair = key_pair_from_seed(IGUANA_PASSPHRASE_VECTOR).unwrap();
         let address = TonWalletParams::MAINNET_DEFAULT
             .address_from_seed(&key_pair.private_bytes())

@@ -372,7 +372,9 @@ public-fixture development can continue but funded acceptance remains blocked.
   Reject testnet-only destination tags on mainnet; raw addresses use an explicit network
   context and a documented bounce default.
 - [x] Implement Iguana raw-seed and BIP39/SLIP-10 HD W5 construction and the private
-  future-subwallet helper. Make public keys distinct from contract addresses.
+  future-subwallet helper. Make public keys distinct from contract addresses. Use
+  `ed25519-dalek` for the seed-to-keypair conversion on every target; do not use
+  `nacl` for TON because its SHA-512 implementation derives a different key on wasm32.
 - [x] Implement required coin/swap trait errors without `todo!`, `unimplemented!` or
   hidden panics. `TonCoin` owns the validated TON wallet identity and implements
   `MarketCoinOps`, `WatcherOps`, and `MmCoin`. It exposes the W5 address and native
@@ -707,6 +709,23 @@ and is shipped in web-wallet commit `29982e9`. A clean temporary browser Iguana
 wallet reached active GRAM status, displayed its address and zero balance, and
 completed the wallet-information/history requests. Toncenter returned one HTTP
 429 during the public-endpoint sequence; KDF retried it and activation completed.
+
+Cross-target crypto correction (2026-09-11): the web bundle built at `91e80eebd`
+and the later `e1fdafa` source revision contained identical TON wallet derivation
+code and received the same KDF Iguana key material. Their addresses nevertheless
+differed because `nacl 0.5.3` encodes SHA-512 length using `usize` and shifts it by
+61, 53, 45 and 37 bits. Those shifts are valid on native 64-bit targets but overflow
+on wasm32 (the browser reported the panic at `nacl/src/hash/sha512.rs:316`) or yield
+non-standard optimized WASM semantics. TON now derives its Ed25519 public key with
+the already-present `ed25519-dalek` dependency in both targets. The public Iguana W5
+vector remains the regression test; native and wasm32 checks are required before a
+bundle is published. The former WASM-only `UQD4TuVf9jAD0hgYsAw81YZLLjaseNNQGgZhdRAcxZZ8bliA`
+address must not be treated as the canonical derivation result.
+
+Validation: `cargo +1.90.0 test --offline -p coins ton::wallet --lib` passed 3/3,
+`cargo +1.90.0 check --offline -p coins --lib --target wasm32-unknown-unknown`
+passed, and `wasm-pack build --release` completed with Rust 1.90. The production
+bundle was transferred to the web-wallet branch; its `npm run build` passed.
 
 Logout/history lifecycle fix (2026-09-11): browser logs showed that `MmCtx` and
 the `swap`/`ordermatch` IndexedDB instances were dropped after logout, while the
