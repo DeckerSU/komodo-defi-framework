@@ -1,6 +1,6 @@
 use super::{
-    TonAddress, TonKeyPolicyError, TonProtocolInfo, TonRpcClientPool, TonRpcError, TonRpcNode, TonSigningSeed,
-    TonWalletError, TonWalletInformation,
+    TonAddress, TonKeyPolicyError, TonNetwork, TonProtocolInfo, TonRpcClientPool, TonRpcError, TonRpcNode,
+    TonSigningSeed, TonWalletError, TonWalletInformation,
 };
 use crate::PrivKeyBuildPolicy;
 use derive_more::Display;

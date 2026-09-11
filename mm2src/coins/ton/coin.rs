@@ -8,12 +8,16 @@ use crate::hd_wallet::HDAddressSelector;
 use crate::utxo::utxo_common::big_decimal_from_sat_unsigned;
 use crate::{
     BalanceError, BalanceFut, CheckIfMyPaymentSentArgs, CoinBalance, ConfirmPaymentInput, DexFee, FoundSwapTxSpend,
-    MarketCoinOps, NegotiateSwapContractAddrErr, PrivKeyBuildPolicy, RefundPaymentArgs, SearchForSwapTxSpendInput,
-    SendPaymentArgs, SignatureError, SignatureResult, SpendPaymentArgs, SwapOps, TransactionErr, TransactionResult,
-    TxMarshalingErr, UnexpectedDerivationMethod, ValidateFeeArgs, ValidateOtherPubKeyErr, ValidatePaymentInput,
-    VerificationError, VerificationResult, WaitForHTLCTxSpendArgs,
+    HistorySyncState, MarketCoinOps, MmCoin, NegotiateSwapContractAddrErr, PrivKeyBuildPolicy, RawTransactionError,
+    RawTransactionFut, RawTransactionRequest, RefundPaymentArgs, SearchForSwapTxSpendInput, SendPaymentArgs,
+    SignatureError, SignatureResult, SpendPaymentArgs, SwapOps, TradeFee, TradePreimageError, TradePreimageFut,
+    TradePreimageResult, TradePreimageValue, TransactionErr, TransactionResult, TxMarshalingErr,
+    UnexpectedDerivationMethod, ValidateAddressResult, ValidateFeeArgs, ValidateOtherPubKeyErr, ValidatePaymentInput,
+    VerificationError, VerificationResult, WaitForHTLCTxSpendArgs, WatcherOps, WeakSpawner, WithdrawError, WithdrawFut,
+    WithdrawRequest,
 };
 use async_trait::async_trait;
+use common::executor::{abortable_queue::AbortableQueue, AbortableSystem, AbortedError};
 use futures::{FutureExt, TryFutureExt};
 use futures01::Future;
 use keys::KeyPair;
@@ -21,6 +25,7 @@ use mm2_err_handle::prelude::*;
 use mm2_number::{BigDecimal, MmNumber};
 use rpc::v1::types::Bytes as BytesJson;
 use rpc::v1::types::H264 as H264Json;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// Native GRAM wallet identity.
@@ -34,6 +39,8 @@ pub struct TonCoin(Arc<TonCoinFields>);
 
 struct TonCoinFields {
     wallet: TonWalletContext,
+    abortable_system: AbortableQueue,
+    required_confirmations: AtomicU64,
 }
 
 const TON_SWAP_UNSUPPORTED: &str = "TON atomic swaps are not supported; GRAM is wallet-only";
@@ -243,6 +250,125 @@ impl MarketCoinOps for TonCoin {
     }
 }
 
+// TON is wallet-only, so all watcher methods use the trait's explicit
+// unsupported-operation defaults.
+#[async_trait]
+impl WatcherOps for TonCoin {}
+
+#[async_trait]
+impl MmCoin for TonCoin {
+    fn is_asset_chain(&self) -> bool {
+        false
+    }
+    fn wallet_only(&self, _ctx: &mm2_core::mm_ctx::MmArc) -> bool {
+        true
+    }
+    fn spawner(&self) -> WeakSpawner {
+        self.0.abortable_system.weak_spawner()
+    }
+    fn withdraw(&self, _req: WithdrawRequest) -> WithdrawFut {
+        Box::new(futures01::future::err(MmError::new(WithdrawError::UnsupportedError(
+            "TON withdrawal requires fee estimation and is not implemented".to_owned(),
+        ))))
+    }
+    fn get_raw_transaction(&self, _req: RawTransactionRequest) -> RawTransactionFut<'_> {
+        Box::new(futures01::future::err(MmError::new(
+            RawTransactionError::NotImplemented {
+                coin: self.ticker().to_owned(),
+            },
+        )))
+    }
+    fn get_tx_hex_by_hash(&self, _tx_hash: Vec<u8>) -> RawTransactionFut<'_> {
+        Box::new(futures01::future::err(MmError::new(
+            RawTransactionError::NotImplemented {
+                coin: self.ticker().to_owned(),
+            },
+        )))
+    }
+    fn decimals(&self) -> u8 {
+        TON_DECIMALS
+    }
+    fn convert_to_address(&self, from: &str, to: serde_json::Value) -> Result<String, String> {
+        let address = TonAddress::parse(from).map_err(|error| error.to_string())?;
+        let format = serde_json::from_value(to).map_err(|_| "Invalid TON address format".to_owned())?;
+        Ok(address.format(format, self.0.wallet.protocol().network))
+    }
+    fn validate_address(&self, address: &str) -> ValidateAddressResult {
+        match TonAddress::parse(address).and_then(|address| address.ensure_network(self.0.wallet.protocol().network)) {
+            Ok(_) => ValidateAddressResult {
+                is_valid: true,
+                reason: None,
+            },
+            Err(error) => ValidateAddressResult {
+                is_valid: false,
+                reason: Some(error.to_string()),
+            },
+        }
+    }
+    fn process_history_loop(&self, _ctx: mm2_core::mm_ctx::MmArc) -> Box<dyn Future<Item = (), Error = ()> + Send> {
+        Box::new(futures01::future::ok(()))
+    }
+    fn history_sync_status(&self) -> HistorySyncState {
+        HistorySyncState::NotEnabled
+    }
+    fn get_trade_fee(&self) -> Box<dyn Future<Item = TradeFee, Error = String> + Send> {
+        Box::new(futures01::future::err(TON_SWAP_UNSUPPORTED.to_owned()))
+    }
+    async fn get_sender_trade_fee(
+        &self,
+        _: TradePreimageValue,
+        _: crate::FeeApproxStage,
+    ) -> TradePreimageResult<TradeFee> {
+        MmError::err(TradePreimageError::ProtocolNotSupported(
+            TON_SWAP_UNSUPPORTED.to_owned(),
+        ))
+    }
+    fn get_receiver_trade_fee(&self, _: crate::FeeApproxStage) -> TradePreimageFut<TradeFee> {
+        Box::new(
+            futures::future::ready(MmError::err(TradePreimageError::ProtocolNotSupported(
+                TON_SWAP_UNSUPPORTED.to_owned(),
+            )))
+            .compat(),
+        )
+    }
+    async fn get_fee_to_send_taker_fee(&self, _: DexFee, _: crate::FeeApproxStage) -> TradePreimageResult<TradeFee> {
+        MmError::err(TradePreimageError::ProtocolNotSupported(
+            TON_SWAP_UNSUPPORTED.to_owned(),
+        ))
+    }
+    fn required_confirmations(&self) -> u64 {
+        self.0.required_confirmations.load(Ordering::Relaxed)
+    }
+    fn requires_notarization(&self) -> bool {
+        false
+    }
+    fn set_required_confirmations(&self, confirmations: u64) {
+        if confirmations > 0 {
+            self.0.required_confirmations.store(confirmations, Ordering::Relaxed);
+        }
+    }
+    fn set_requires_notarization(&self, _: bool) {}
+    fn swap_contract_address(&self) -> Option<BytesJson> {
+        None
+    }
+    fn fallback_swap_contract(&self) -> Option<BytesJson> {
+        None
+    }
+    fn mature_confirmations(&self) -> Option<u32> {
+        None
+    }
+    fn coin_protocol_info(&self, _: Option<MmNumber>) -> Vec<u8> {
+        Vec::new()
+    }
+    fn is_coin_protocol_supported(&self, _: &Option<Vec<u8>>, _: Option<MmNumber>, _: u64, _: bool) -> bool {
+        false
+    }
+    fn on_disabled(&self) -> Result<(), AbortedError> {
+        self.0.abortable_system.abort_all()
+    }
+    fn on_token_deactivated(&self, _: &str) {}
+}
+
 impl TonCoin {
     pub fn new(
         config: TonCoinConfig,
@@ -250,7 +376,12 @@ impl TonCoin {
         key_policy: PrivKeyBuildPolicy,
     ) -> Result<Self, TonActivationError> {
         let wallet = TonWalletContext::new(config, request, key_policy)?;
-        Ok(TonCoin(Arc::new(TonCoinFields { wallet })))
+        let required_confirmations = wallet.required_confirmations();
+        Ok(TonCoin(Arc::new(TonCoinFields {
+            wallet,
+            abortable_system: AbortableQueue::default(),
+            required_confirmations: AtomicU64::new(required_confirmations),
+        })))
     }
 
     pub fn ticker(&self) -> &str {

@@ -368,15 +368,15 @@ public-fixture development can continue but funded acceptance remains blocked.
   context and a documented bounce default.
 - [x] Implement Iguana raw-seed and BIP39/SLIP-10 HD W5 construction and the private
   future-subwallet helper. Make public keys distinct from contract addresses.
-- [ ] Implement required coin/swap trait errors without `todo!`, `unimplemented!` or
-  hidden panics. `TonCoin` now owns the validated TON wallet identity as a separate
-  type. Its `MarketCoinOps` now exposes the W5 address and native balance, while
-  unsupported raw-BOC, confirmation, HTLC, key-export and arbitrary-message methods
-  return explicit errors. Its `SwapOps` returns explicit wallet-only unsupported
-  errors for every externally callable swap operation; the legacy infallible HTLC-key
-  hooks return compatibility zero values but remain unreachable once `MmCoin::wallet_only`
-  is enforced. Implement the remaining `MmCoin` trait and gate trading even if
-  `wallet_only` is omitted from input config.
+- [x] Implement required coin/swap trait errors without `todo!`, `unimplemented!` or
+  hidden panics. `TonCoin` owns the validated TON wallet identity and implements
+  `MarketCoinOps`, `WatcherOps`, and `MmCoin`. It exposes the W5 address and native
+  balance, advertises itself as wallet-only regardless of request data, and makes all
+  unsupported raw-BOC, confirmation, history, HTLC, key-export, arbitrary-message,
+  withdraw, and trading operations return explicit errors. The legacy infallible
+  HTLC-key hooks return compatibility zero values but are unreachable because
+  `MmCoin::wallet_only` is enforced. Actual withdrawal, history, and confirmation
+  tracking remain later milestones.
 
 Tests: reference vectors, CRC corruption, tags, network/workchain changes, wallet-ID
 changes, invalid mnemonic redaction, max integer/decimal bounds, BOC round trips and
