@@ -16,6 +16,10 @@ command -v curl >/dev/null
 command -v jq >/dev/null
 userpass=$(jq -r '.rpc_password' "$config")
 rpc_url="http://127.0.0.1:$port"
+results_dir="$script_dir/results"
+mkdir -p "$results_dir"
+sse_file="$results_dir/$mode-$activation_api.sse"
+sse_pid=''
 ton_node=${KDF_TON_RPC_NODE:-https://toncenter.com/api/v2}
 ton_api_key=${KDF_TON_API_KEY:-}
 nodes=$(jq -cn --arg url "$ton_node" --arg api_key "$ton_api_key" \
@@ -28,6 +32,13 @@ rpc_allow_error() {
   curl --silent --show-error --connect-timeout 5 --max-time 30 --url "$rpc_url" --data @-
 }
 assert_json() { jq -e "$1" >/dev/null; }
+cleanup() {
+  if [[ -n "$sse_pid" ]]; then
+    kill "$sse_pid" 2>/dev/null || true
+    wait "$sse_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
 
 if [[ "$activation_api" == legacy ]]; then
 enable=$(rpc <<JSON
@@ -63,17 +74,47 @@ if [[ "$mode" == hd ]]; then
   test "$address" = "UQCLuOL1GAZuZbbhocUlGI3gxasW9HNK8zZpN7L-noXSF9l0"
 fi
 
+# Register the SSE client before subscribing it to streamers. KDF's streaming
+# manager owns a single poller per coin and fans its events out to all clients.
+: >"$sse_file"
+curl --no-buffer --silent --show-error --connect-timeout 5 --max-time 90 \
+  "$rpc_url/event-stream?id=1" >"$sse_file" 2>"$sse_file.stderr" &
+sse_pid=$!
+sleep 1
+kill -0 "$sse_pid" 2>/dev/null
+balance_stream=$(rpc <<JSON
+{"mmrpc":"2.0","userpass":"$userpass","method":"balance::enable","params":{"coin":"GRAM","client_id":1}}
+JSON
+)
+printf '%s' "$balance_stream" | assert_json '.result.streamer_id == "BALANCE:GRAM"'
+history_stream=$(rpc <<JSON
+{"mmrpc":"2.0","userpass":"$userpass","method":"tx_history::enable","params":{"coin":"GRAM","client_id":1}}
+JSON
+)
+printf '%s' "$history_stream" | assert_json '.result.streamer_id == "TX_HISTORY:GRAM"'
+
 balance=$(rpc <<JSON
 {"userpass":"$userpass","method":"my_balance","coin":"GRAM"}
 JSON
 )
 printf '%s' "$balance" | assert_json '.balance | tonumber >= 0'
 
-legacy_history=$(rpc <<JSON
+legacy_history=''
+for _ in $(seq 1 45); do
+  legacy_history=$(rpc <<JSON
 {"userpass":"$userpass","method":"my_tx_history","coin":"GRAM","limit":10}
 JSON
 )
+  printf '%s' "$legacy_history" | assert_json '.result.transactions | type == "array"'
+  if [[ "$mode" != hd ]] || printf '%s' "$legacy_history" | jq -e '.result.transactions | length > 0' >/dev/null; then
+    break
+  fi
+  sleep 1
+done
 printf '%s' "$legacy_history" | assert_json '.result.transactions | type == "array"'
+if [[ "$mode" == hd ]]; then
+  printf '%s' "$legacy_history" | assert_json '.result.transactions | length > 0'
+fi
 
 history_target='{"type":"iguana"}'
 if [[ "$mode" == hd ]]; then
@@ -84,6 +125,17 @@ v2_history=$(rpc <<JSON
 JSON
 )
 printf '%s' "$v2_history" | assert_json '.result.transactions | type == "array"'
+if [[ "$mode" == hd ]]; then
+  printf '%s' "$v2_history" | assert_json '.result.total > 0'
+fi
+
+for _ in $(seq 1 20); do
+  if grep -q '"_type":"BALANCE:GRAM"' "$sse_file"; then
+    break
+  fi
+  sleep 1
+done
+grep -q '"_type":"BALANCE:GRAM"' "$sse_file"
 
 if printf '%s' "$balance" | jq -e '.balance | tonumber >= 0.001' >/dev/null; then
 unsigned_withdraw=$(rpc <<JSON
@@ -99,6 +151,14 @@ if [[ "$send" == --send ]]; then
 JSON
 )
   printf '%s' "$broadcast" | assert_json '.tx_hash | type == "string"'
+  message_hash=$(printf '%s' "$broadcast" | jq -r '.tx_hash')
+  for _ in $(seq 1 60); do
+    if grep -q '"_type":"TX_HISTORY:GRAM"' "$sse_file"; then
+      break
+    fi
+    sleep 1
+  done
+  grep -q '"_type":"TX_HISTORY:GRAM"' "$sse_file"
 fi
 else
   insufficient_balance=$(rpc_allow_error <<JSON
@@ -112,6 +172,8 @@ JSON
   fi
 fi
 
-mkdir -p "$script_dir/results"
-printf '{"mode":"%s","activation_api":"%s","address":"%s","send":%s}\n' "$mode" "$activation_api" "$address" "$([[ "$send" == --send ]] && echo true || echo false)" >"$script_dir/results/$mode-$activation_api.json"
+printf '{"mode":"%s","activation_api":"%s","address":"%s","send":%s,"message_hash":%s}\n' \
+  "$mode" "$activation_api" "$address" "$([[ "$send" == --send ]] && echo true || echo false)" \
+  "$(if [[ -n ${message_hash:-} ]]; then jq -Rn --arg value "$message_hash" '$value'; else echo null; fi)" \
+  >"$results_dir/$mode-$activation_api.json"
 printf 'TON RPC checks passed for %s address %s via %s activation\n' "$mode" "$address" "$activation_api"
