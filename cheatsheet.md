@@ -16,6 +16,7 @@ entry. The required layout is:
 
 ```text
 $COINS_ROOT/coins
+$COINS_ROOT/seed-nodes.json
 $COINS_ROOT/ton/GRAM
 ```
 
@@ -26,6 +27,7 @@ $COINS_ROOT/ton/GRAM
 ```sh
 export COINS_ROOT=/absolute/path/to/coins
 test -f "$COINS_ROOT/coins"
+test -f "$COINS_ROOT/seed-nodes.json"
 test -f "$COINS_ROOT/ton/GRAM"
 ```
 
@@ -77,10 +79,13 @@ chmod 700 "$KDF_HOME" "$KDF_HOME/db"
 
 read -r -s -p 'KDF BIP39 phrase: ' KDF_PASSPHRASE; printf '\n'
 read -r -s -p 'KDF RPC password: ' KDF_RPC_PASSWORD; printf '\n'
+SEED_NODES="$(jq -ce '[.[] | select(.netid == 6133) | .host | select(type == "string" and length > 0)] | unique | select(length > 0)' \
+  "$COINS_ROOT/seed-nodes.json")"
 jq -n \
   --arg passphrase "$KDF_PASSPHRASE" \
   --arg rpc_password "$KDF_RPC_PASSWORD" \
   --arg dbdir "$KDF_HOME/db" \
+  --argjson seednodes "$SEED_NODES" \
   '{
     gui: "nogui",
     netid: 6133,
@@ -91,8 +96,10 @@ jq -n \
     rpcport: 17783,
     rpcip: "127.0.0.1",
     myipaddr: "127.0.0.1",
-    i_am_seed: true,
-    is_bootstrap_node: true,
+    disable_p2p: false,
+    i_am_seed: false,
+    is_bootstrap_node: false,
+    seednodes: $seednodes,
     event_streaming_configuration: {
       access_control_allow_origin: "http://127.0.0.1"
     }
@@ -104,6 +111,12 @@ chmod 600 "$KDF_HOME/MM2.json"
 This configuration starts **HD mode**. Its KDF BIP39 seed is derived with SLIP-10 path
 `m/44'/607'/0'`, then used for the TON wallet. It does not require, or enable, a native
 TON mnemonic mode.
+
+The configuration starts a normal KDF light node: `disable_p2p`, `i_am_seed`, and
+`is_bootstrap_node` are all explicitly `false`. `SEED_NODES` selects every host for
+`netid: 6133` from the `coins` repository's `seed-nodes.json`; it is required because
+KDF rejects a non-bootstrap node without configured seed nodes before its RPC server
+starts.
 
 For **Iguana mode**, use the same configuration structure but set `enable_hd` to
 `false`, choose a separate `dbdir` and `rpcport` (for example `17784`), and start a

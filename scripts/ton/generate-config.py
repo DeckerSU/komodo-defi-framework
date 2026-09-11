@@ -8,17 +8,46 @@ import sys
 from pathlib import Path
 
 
+def seed_nodes_for_netid(seed_nodes_file: Path, netid: int) -> list[str]:
+    try:
+        entries = json.loads(seed_nodes_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot read seed nodes: {error}") from error
+
+    if not isinstance(entries, list):
+        raise ValueError("seed nodes must be a JSON array")
+
+    nodes = sorted(
+        {
+            entry["host"]
+            for entry in entries
+            if isinstance(entry, dict)
+            and entry.get("netid") == netid
+            and isinstance(entry.get("host"), str)
+            and entry["host"]
+        }
+    )
+    if not nodes:
+        raise ValueError(f"no seed nodes configured for netid {netid}")
+    return nodes
+
+
 def main() -> int:
-    if len(sys.argv) != 6:
-        print("usage: generate-config.py MODE SEED_FILE CONFIG_FILE DB_DIR RPC_PORT", file=sys.stderr)
+    if len(sys.argv) != 7:
+        print("usage: generate-config.py MODE SEED_FILE SEED_NODES_FILE CONFIG_FILE DB_DIR RPC_PORT", file=sys.stderr)
         return 2
-    mode, seed_file, config_file, db_dir, rpc_port = sys.argv[1:]
+    mode, seed_file, seed_nodes_file, config_file, db_dir, rpc_port = sys.argv[1:]
     if mode not in {"hd", "iguana"}:
         print("MODE must be hd or iguana", file=sys.stderr)
         return 2
     seed = Path(seed_file).read_text(encoding="utf-8").strip()
     if not seed:
         print("seed file is empty", file=sys.stderr)
+        return 2
+    try:
+        seed_nodes = seed_nodes_for_netid(Path(seed_nodes_file), 6133)
+    except ValueError as error:
+        print(error, file=sys.stderr)
         return 2
 
     # KDF owns BIP39 processing for HD mode. Iguana intentionally uses the
@@ -40,10 +69,12 @@ def main() -> int:
         "enable_hd": mode == "hd",
         "dbdir": db_dir,
         "rpcport": int(rpc_port),
-        # The isolated runtime has no bootstrap peer. Marking it a seed keeps
-        # the P2P precheck from requiring an external seed node.
-        "i_am_seed": True,
-        "is_bootstrap_node": True,
+        # Run as a normal light node. The KDF P2P precheck requires configured
+        # seed nodes when neither a seed nor a bootstrap node is selected.
+        "disable_p2p": False,
+        "i_am_seed": False,
+        "is_bootstrap_node": False,
+        "seednodes": seed_nodes,
         "myipaddr": "127.0.0.1",
         "rpcip": "127.0.0.1",
         # Enable the native SSE endpoint used by the balance and history

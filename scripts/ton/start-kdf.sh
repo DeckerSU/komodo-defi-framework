@@ -11,8 +11,10 @@ port=${KDF_TON_RPC_PORT:-$([[ "$mode" == hd ]] && echo 17783 || echo 17784)}
 
 test -x "$runtime_dir/kdf"
 test -r "$seed_file"
+test -r "$runtime_dir/seed-nodes.json"
 mkdir -p "$runtime_dir/config" "$runtime_dir/db/$mode" "$runtime_dir/logs"
-"$runtime_dir/generate-config.py" "$mode" "$seed_file" "$runtime_dir/config/$mode.json" "$runtime_dir/db/$mode" "$port"
+"$runtime_dir/generate-config.py" "$mode" "$seed_file" "$runtime_dir/seed-nodes.json" \
+  "$runtime_dir/config/$mode.json" "$runtime_dir/db/$mode" "$port"
 
 if [[ -f "$runtime_dir/$mode.pid" ]] && kill -0 "$(cat "$runtime_dir/$mode.pid")" 2>/dev/null; then
   echo "KDF is already running for $mode" >&2

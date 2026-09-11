@@ -12,6 +12,7 @@ kdf_binary=${KDF_TON_BINARY:-}
 command -v sha256sum >/dev/null
 test -f "$coins_dir/coins"
 test -f "$coins_dir/ton/GRAM"
+test -f "$coins_dir/seed-nodes.json"
 
 mkdir -p "$runtime_dir"/{config,db/hd,db/iguana,logs,results}
 if [[ -z "$kdf_binary" ]]; then
@@ -22,6 +23,7 @@ fi
 test -x "$kdf_binary"
 install -m 0700 "$kdf_binary" "$runtime_dir/kdf"
 install -m 0600 "$coins_dir/coins" "$runtime_dir/coins"
+install -m 0600 "$coins_dir/seed-nodes.json" "$runtime_dir/seed-nodes.json"
 mkdir -p "$runtime_dir/ton"
 install -m 0600 "$coins_dir/ton/GRAM" "$runtime_dir/ton/GRAM"
 install -m 0700 "$script_dir/start-kdf.sh" "$runtime_dir/start-kdf.sh"
@@ -34,7 +36,7 @@ python3 - "$runtime_dir/manifest.json" "$kdf_revision" "$coins_revision" "$runti
 import hashlib, json, pathlib, subprocess, sys
 manifest, kdf_revision, coins_revision, runtime = sys.argv[1:]
 runtime = pathlib.Path(runtime)
-files = ["kdf", "coins", "ton/GRAM", "start-kdf.sh", "test-rpc.sh", "generate-config.py"]
+files = ["kdf", "coins", "seed-nodes.json", "ton/GRAM", "start-kdf.sh", "test-rpc.sh", "generate-config.py"]
 hashes = {name: hashlib.sha256((runtime / name).read_bytes()).hexdigest() for name in files}
 pathlib.Path(manifest).write_text(json.dumps({
     "kdf_revision": kdf_revision,

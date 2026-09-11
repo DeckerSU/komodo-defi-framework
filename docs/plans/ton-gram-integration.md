@@ -766,6 +766,9 @@ The root-level `cheatsheet.md` is a self-contained binary-and-curl workflow. It
 specifies the required external GRAM-enabled `coins` layout, private `MM2.json`, KDF
 environment variables, and the implemented GRAM v1/v2 activation, balance, history,
 transfer, broadcast, and event-stream RPCs without embedding a credential or mnemonic.
+Its normal light-node configuration selects the `netid: 6133` seed nodes from the
+required `coins/seed-nodes.json` and explicitly sets `disable_p2p`, `i_am_seed`, and
+`is_bootstrap_node` to `false`.
 
 - [ ] No production code path depends on the funded reference address or seed file.
 - [ ] HD BIP39/SLIP-10 vector matches; Iguana has its own repeatable address; both key modes work.
