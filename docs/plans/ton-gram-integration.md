@@ -687,6 +687,16 @@ Validation (2026-09-11): `cargo +1.90.0 test --offline -p coins ton:: --lib` pas
 `chain::{Transaction, BlockHeader}` to `bitcoin` conversion incompatibility before
 TON-specific errors; it is outside this change.
 
+WebAssembly validation (2026-09-11):
+`RUSTUP_TOOLCHAIN=1.90.0 wasm-pack build mm2src/mm2_bin_lib --target web --out-dir wasm_build/deps/pkg/`
+completed successfully. The generated `kdflib_bg.wasm` is 38,035,681 bytes
+(SHA-256 `972f26b0a9a422c3bc29863c47a1882b8ccf6c75080ba7e3bf0f0845efa3a97c`).
+It was integrated on the separate `kmd-web-wallet` branch
+`feat/ton-gram-integration` (commit `646869a`): GRAM uses the existing
+single-address Iguana session, `enable_ton`, KDF v2 history, and the normal
+withdraw-then-send flow. `npm run build`, `npm run lint`, and `git diff --check`
+passed in the consumer app; lint emitted only pre-existing/generated-code warnings.
+
 Required runtime RPC sequence (execute for both modes, with funded sends where funds
 exist; task routes and HD-specific cases apply as indicated):
 
