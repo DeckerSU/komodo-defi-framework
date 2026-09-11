@@ -666,6 +666,22 @@ integration-runs/ton-gram/
   funds silently. Use a fixed small amount, explicit destination and fee/spend cap.
   Max-send and insufficient-balance tests build/mock only; never drain the funded wallet.
 
+Progress (2026-09-11): The packaged read-only suite now attaches SSE before enabling
+`stream::balance::enable` and `stream::tx_history::enable`, checks the initial
+`BALANCE:GRAM` event, and requires persisted HD history through both legacy and v2
+endpoints. It records a public message identifier only when the separately requested
+`--send` path is used. Clean netid-6133 runtimes passed this suite for HD legacy,
+HD v2 task activation, Iguana legacy, and Iguana v2 task activation. Each runtime was
+stopped after its run. The original development history directory predates canonical
+address persistence and intentionally remains untouched; clean runtime directories
+verified the corrected `EQ…` provider address to `UQ…` KDF-address mapping.
+
+Validation (2026-09-11): `cargo +1.90.0 test --offline -p coins ton:: --lib` passed
+57 tests. A Rust 1.90 release artifact was packaged from `target/ton-release/release/kdf`.
+`cargo +1.90.0 check --offline -p mm2_main --lib` reaches an existing Lightning
+`chain::{Transaction, BlockHeader}` to `bitcoin` conversion incompatibility before
+TON-specific errors; it is outside this change.
+
 Required runtime RPC sequence (execute for both modes, with funded sends where funds
 exist; task routes and HD-specific cases apply as indicated):
 
