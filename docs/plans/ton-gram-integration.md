@@ -412,8 +412,11 @@ fails without changing storage.
 - [ ] Distinguish nonexist/uninitialized, active, frozen and unknown states. Only the
   first two imply fresh StateInit; active accounts need compatible W5 state and seqno.
 - [ ] Add request deadlines, bounded retries/backoff, cancellation, endpoint failover
-  and rate limits shared by background consumers. Do not turn provider errors into zero
-  balances. Verify selected endpoints/network using a supported network identity check.
+  and rate limits shared by background consumers. The initial bounded read-only pool now
+  tries each configured endpoint once for transport/timeouts/429/5xx and never retries a
+  broadcast automatically; backoff, cancellation, rate limits and network identity remain.
+  Do not turn provider errors into zero balances. Verify selected endpoints/network using
+  a supported network identity check.
 - [ ] Implement immediate/task activation and balance; expose actual normalized address,
   network, wallet version, key mode and supported capabilities. Register only after
   successful initialization; clean up partial/cancelled activation.

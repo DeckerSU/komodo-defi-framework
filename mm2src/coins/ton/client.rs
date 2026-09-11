@@ -2,6 +2,7 @@ use super::{TonAddress, TonAddressFormat, TonAmount, TonNetwork};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use common::custom_futures::timeout::FutureTimerExt;
 use derive_more::Display;
+use serde::Deserialize;
 use serde_json::{self as json, Value as Json};
 use std::convert::TryFrom;
 use std::error::Error;
@@ -25,6 +26,73 @@ pub struct TonRpcClient {
     endpoint: Url,
     api_key: Option<Zeroizing<String>>,
     network: TonNetwork,
+}
+
+/// One TON Center-compatible endpoint supplied at activation time.
+///
+/// API keys are accepted only from the activation request; the static `coins`
+/// configuration contains endpoint URLs, never credentials.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TonRpcNode {
+    pub url: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+/// A bounded read-only endpoint failover pool.
+///
+/// Each read attempts every configured endpoint at most once. Broadcasting is
+/// deliberately not retried here because a timeout after submission has an
+/// unknown chain outcome.
+pub struct TonRpcClientPool {
+    clients: Vec<TonRpcClient>,
+}
+
+impl TonRpcClientPool {
+    pub fn new(nodes: Vec<TonRpcNode>, network: TonNetwork) -> Result<Self, TonRpcError> {
+        if nodes.is_empty() {
+            return Err(TonRpcError::NoEndpoints);
+        }
+        let clients = nodes
+            .into_iter()
+            .map(|node| TonRpcClient::new(&node.url, node.api_key, network))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(TonRpcClientPool { clients })
+    }
+
+    pub async fn wallet_information(&self, address: &TonAddress) -> Result<TonWalletInformation, TonRpcError> {
+        let mut last_error = None;
+        for client in &self.clients {
+            match client.wallet_information(address).await {
+                Ok(information) => return Ok(information),
+                Err(error) if error.is_retryable() => last_error = Some(error),
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_error.unwrap_or(TonRpcError::NoEndpoints))
+    }
+
+    pub async fn wallet_information_with_seqno(
+        &self,
+        address: &TonAddress,
+    ) -> Result<TonWalletInformation, TonRpcError> {
+        let mut last_error = None;
+        for client in &self.clients {
+            match client.wallet_information_with_seqno(address).await {
+                Ok(information) => return Ok(information),
+                Err(error) if error.is_retryable() => last_error = Some(error),
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_error.unwrap_or(TonRpcError::NoEndpoints))
+    }
+
+    /// Submits through the configured primary endpoint exactly once.
+    pub async fn send_boc_return_hash(&self, boc: &[u8]) -> Result<TonBroadcastResult, TonRpcError> {
+        let client = self.clients.first().ok_or(TonRpcError::NoEndpoints)?;
+        client.send_boc_return_hash(boc).await
+    }
 }
 
 impl TonRpcClient {
@@ -244,8 +312,10 @@ pub struct TonBroadcastResult {
     pub message_hash: String,
 }
 
-#[derive(Debug, Display, Eq, PartialEq)]
+#[derive(Clone, Debug, Display, Eq, PartialEq)]
 pub enum TonRpcError {
+    #[display(fmt = "No TON RPC endpoints are configured")]
+    NoEndpoints,
     #[display(fmt = "Invalid TON RPC endpoint")]
     InvalidEndpoint,
     #[display(fmt = "Invalid TON RPC API key")]
@@ -267,6 +337,13 @@ pub enum TonRpcError {
 }
 
 impl Error for TonRpcError {}
+
+impl TonRpcError {
+    fn is_retryable(&self) -> bool {
+        matches!(self, TonRpcError::Timeout | TonRpcError::Transport)
+            || matches!(self, TonRpcError::HttpStatus(status) if *status == 429 || *status >= 500)
+    }
+}
 
 fn parse_wallet_information(bytes: &[u8]) -> Result<TonWalletInformation, TonRpcError> {
     let response: Json = json::from_slice(bytes).map_err(|_| TonRpcError::InvalidResponse)?;
@@ -460,5 +537,18 @@ mod tests {
             TonRpcClient::new("https://toncenter.com", None, TonNetwork::Mainnet),
             Err(TonRpcError::InvalidEndpoint),
         ));
+    }
+
+    #[test]
+    fn validates_a_non_empty_pool_and_classifies_failover_errors() {
+        assert!(matches!(
+            TonRpcClientPool::new(Vec::new(), TonNetwork::Mainnet),
+            Err(TonRpcError::NoEndpoints)
+        ));
+        assert!(TonRpcError::Timeout.is_retryable());
+        assert!(TonRpcError::HttpStatus(429).is_retryable());
+        assert!(TonRpcError::HttpStatus(503).is_retryable());
+        assert!(!TonRpcError::HttpStatus(400).is_retryable());
+        assert!(!TonRpcError::InvalidResponse.is_retryable());
     }
 }
