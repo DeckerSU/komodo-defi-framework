@@ -1,6 +1,6 @@
 # TON / GRAM wallet integration plan
 
-Status: implementation not started; repository investigation and implementation plan completed.
+Status: implementation in progress; M0 and the TON primitive/key-derivation groundwork are complete.
 Date: 2026-09-10.
 Implementation branch: `feat/ton-gram-integration`, created from local `dev` at
 `e686ef3500585f01c9f0e89c8c01bc036c42253c`.
@@ -27,10 +27,10 @@ The user's latest derivation requirements supersede the initial same-address req
 | KDF mode | Key source | Address expectation |
 | --- | --- | --- |
 | Iguana (`enable_hd: false`) | The existing 32-byte Iguana private key, interpreted as an Ed25519 signing seed | Deterministic W5R1 address; allowed to differ from the reference address |
-| HD (`enable_hd: true`) | Original TON mnemonic, using native TON mnemonic derivation | Must reproduce the reference W5R1 address below |
+| HD (`enable_hd: true`) | The primary KDF BIP39 phrase, derived through SLIP-10 at `m/44'/607'/0'` | Deterministic W5R1 address; it is intentionally distinct from a native TON mnemonic address |
 
-Default local fixture: workspace `seed.txt`, outside the KDF repository. Reference HD
-mainnet address:
+Native TON reference fixture: workspace `seed.txt`, outside the KDF repository. It is
+not a KDF HD fixture under the BIP39-only policy. Its mainnet address is:
 
 ```text
 UQBYGTsWwxh00p3Fq_EdwzQ2uRzuptfxP5crEOsfRT6zDOS4
@@ -153,7 +153,7 @@ The untracked local `CLAUDE.md` was not modified.
 
 | Source | Reusable behavior | Adaptation required |
 | --- | --- | --- |
-| `src/wallet.rs` | 32-byte seed → Ed25519 key pair; `TonWallet`; internal message fields | Feed KDF's Iguana bytes; use native TON mnemonic derivation for HD; fix wallet parameters explicitly |
+| `src/wallet.rs` | 32-byte seed → Ed25519 key pair; `TonWallet`; internal message fields | Feed KDF's Iguana bytes or the BIP39/SLIP-10-derived seed; fix wallet parameters explicitly |
 | `src/main.rs` | Read state, build/sign external message, include StateInit for first send, BOC broadcast | Move logic into RPC/task-compatible operations; no CLI confirmation inside KDF |
 | `src/util.rs` | Integer amount parsing and friendly-address flags | Preserve strict checksum/tag/network validation; add raw/base64 variants and checked bounds |
 | `src/toncenter.rs` | `getWalletInformation`, `sendBocReturnHash`, endpoint selection, API-key header, retry outline | Replace blocking `ureq` and `thread::sleep` with KDF async transport/timers; typed responses and bounded retries |
@@ -221,48 +221,41 @@ defaults. [Official W5 wallet derivation](https://docs.ton.org/contracts/standar
 Iguana must reuse `IguanaPrivKey` bytes exactly. Existing KDF passphrase processing can
 accept WIF/hex or hash and clamp a passphrase; do not substitute plain SHA256, random
 bytes, or TON mnemonic derivation for that established behavior. Feed the resulting
-32 bytes to Ed25519, then construct W5R1. The seed-file helper normalizes the numbered
-file to the same canonical phrase string before both modes are launched.
+32 bytes to Ed25519, then construct W5R1. It must not use a native TON mnemonic
+or the BIP39 HD derivation path.
 
-For HD, use the native TON mnemonic validation and derivation algorithm. Implement
-the small passwordless algorithm directly in `crypto` so that normalised words,
-validation seed, key material and temporary Ed25519 keypair buffers can be zeroized;
-verify it against the independent `tonlib-core` vector. Do not fabricate a BIP44 path
-for a key that was not BIP44-derived. Model the public derivation metadata as native
-TON W5R1 with network/workchain/subwallet information.
+For HD, use KDF's existing strict BIP39 startup and derive the Ed25519 signing
+seed through the TEP-3 multichain SLIP-10 path `m/44'/607'/0'`. This uses the same
+primary phrase as every other KDF HD coin, with no global `mnemonic_type`, no second
+key-policy variant, and no native-TON fallback. The selected path is a constant, not
+an RPC input; keep account/change/address selectors disabled until a compatible
+multi-address design is specified. Model public metadata as `bip39_slip10`, W5R1,
+network/workchain/subwallet information.
 
-Proposed startup contract:
+The corrected local `seed.txt` remains a useful native TON reference, but it is not
+BIP39-valid and therefore cannot initialize an HD KDF wallet under this policy. Its
+funded native address must not be presented as a KDF HD address or used by automated
+KDF tests. The private control fixture `../seed-bip39-control.txt` contains a freshly
+generated BIP39 phrase; its public W5R1 mainnet address is
+`UQCLuOL1GAZuZbbhocUlGI3gxasW9HNK8zZpN7L-noXSF9l0`.
+It was funded with `1.776019966 GRAM` on 2026-09-11; treat that as a live-test
+starting condition, not a fixed balance assertion.
 
-- Add an explicit `mnemonic_type: "bip39" | "ton"` configuration choice. Default
-  remains `bip39`; existing wallets retain all current behavior.
-- `enable_hd: true, mnemonic_type: "ton"` uses a distinct typed TON mnemonic key
-  context/policy. Derive the TON signing key while the decrypted phrase is available,
-  retain only zeroizing key material, and avoid storing the phrase in a coin object.
-- Keep KDF's required secp256k1 P2P identity separate from the TON signing key. For
-  the new TON context, use the existing deterministic `key_pair_from_seed` identity
-  helper on the canonical phrase; document/test that convention and its database ID.
-  Do not pretend that this identity is a BIP32 HD root.
-- Add a TON variant to the key-policy boundary, with explicit unsupported-policy
-  handling for existing BIP39-only coin builders. In this new TON-native session,
-  other chains are not silently assigned invented BIP39 roots. Existing BIP39
-  sessions and other coins' addresses remain unchanged.
-- When a `mnemonic_type: "bip39"` startup phrase also passes the native TON
-  passwordless validation, derive and retain a separate zeroizing TON key alongside
-  the BIP39 context. This allows GRAM to use the same words without changing any
-  existing BIP39-derived addresses. A BIP39-valid phrase that is not TON-valid must
-  not produce a substitute TON address; GRAM activation reports that no native TON
-  key is available.
-- Persist mnemonic type with named/encrypted wallets; reload must not default a TON
-  wallet back to BIP39. Cover config imports, encrypted import, named-wallet reload,
-  no-login mode, and seed generation. For the first release, reject automatic TON
-  mnemonic generation if it is not implemented; never generate BIP39 under a TON label.
-- A BIP39 session requesting native TON without a TON key source must receive a clear
-  derivation-policy error. Supporting a separate TON phrase inside a mixed BIP39
-  session can be added later; it is not necessary for the requested local fixture.
+Startup contract:
 
-This is a proposed new configuration contract, not an already available KDF option.
-Implement it narrowly across `lp_wallet`, `crypto` and `PrivKeyBuildPolicy`, including
-every exhaustive match. Do not weaken the existing BIP39 validator globally.
+- `enable_hd: true` always initializes `GlobalHDAccountCtx` from the primary BIP39
+  phrase. Existing coin derivation, encrypted wallet storage and database identity
+  remain unchanged.
+- GRAM activation receives `PrivKeyBuildPolicy::GlobalHDAccount` and derives only
+  `m/44'/607'/0'` through the existing Ed25519 SLIP-10 implementation.
+- Iguana activation reuses its existing 32-byte private key as an Ed25519 signing
+  seed. It remains independent of HD derivation.
+- Do not accept, persist, validate, or derive a native TON mnemonic in the KDF global
+  wallet context. A future explicit TON-key import can be designed as a separate
+  encrypted coin secret without changing this contract.
+
+This uses no new startup configuration and does not weaken the existing BIP39
+validator globally.
 
 ### 3.2 One address now; deterministic additional addresses later
 
@@ -342,9 +335,9 @@ payments, then adds history and streaming explicitly.
 - [x] Recheck branch/base and all applicable instructions; preserve unrelated edits.
 - [x] Validate the corrected numbered seed file locally. Accept plain words or exactly
   ordered numbered lines; reject mixed numbering and extra data. Do not print words.
-- [x] Offline derive HD W5R1 with `tonlib-core` and compare with the reference address.
-  Passed with the corrected local fixture; only public address, wallet version/ID/network
-  and pass/fail were printed. This verifies library derivation, not KDF HD startup.
+- [x] Offline derive the native TON W5R1 reference with `tonlib-core`; it confirms the
+  corrected local fixture but is not KDF HD startup validation. The BIP39/SLIP-10 W5R1
+  vector is separately covered in the KDF primitive tests.
 - [x] Derive Iguana independently using existing KDF key construction and record its
   public expected address. The disposable `kdf-ton-iguana-vector` passphrase produces
   `UQBZfhh5F-CFw-1L978b7jrJ0c3FUlssE8jk2ueScxRHleke`; it is intentionally distinct
@@ -373,7 +366,7 @@ public-fixture development can continue but funded acceptance remains blocked.
   Support raw and valid standard/URL-safe friendly forms; validate CRC, tags and length.
   Reject testnet-only destination tags on mainnet; raw addresses use an explicit network
   context and a documented bounce default.
-- [x] Implement Iguana raw-seed and HD mnemonic W5 construction and the private
+- [x] Implement Iguana raw-seed and BIP39/SLIP-10 HD W5 construction and the private
   future-subwallet helper. Make public keys distinct from contract addresses.
 - [ ] Implement required coin/swap trait errors without `todo!`, `unimplemented!` or
   hidden panics. Gate trading even if `wallet_only` is omitted from input config.
@@ -382,21 +375,21 @@ Tests: reference vectors, CRC corruption, tags, network/workchain changes, walle
 changes, invalid mnemonic redaction, max integer/decimal bounds, BOC round trips and
 subwallet counter uniqueness/bounds.
 
-### M2 — Native TON mnemonic startup and single-address HD behavior
+### M2 — BIP39/SLIP-10 HD derivation and single-address behavior
 
-- [x] Implement the explicit mnemonic type and typed key context from section 3.1.
-- [x] Reuse the decrypted phrase at the wallet initialization boundary; zeroize temporary
-  buffers and sanitize library errors. Keep costly mnemonic derivation outside async
-  executor hot paths, using established worker facilities where necessary.
+- [x] Remove the global `mnemonic_type: "ton"`, native-TON key context, and TON-only
+  key-policy variant. HD startup remains the existing BIP39 path for every coin.
+- [x] Derive GRAM's Ed25519 signing seed using TEP-3 `m/44'/607'/0'`; add a public
+  BIP39→SLIP-10→W5R1 vector without exposing a mnemonic.
 - [ ] Preserve named/encrypted wallet metadata and deterministic DB identity across restart.
 - [ ] Wire account-balance and selector handling for the sole TON address.
 - [ ] Add unsupported-new-address/account/scan handling at both direct and task boundaries.
-- [ ] Update relevant AGENTS documentation for the new crypto policy and mnemonic type.
+- [ ] Update relevant AGENTS documentation for the TON HD path and single-address policy.
 
-Tests: TON-valid/BIP39-invalid public mnemonic starts in TON HD mode; default BIP39
-still rejects it; valid existing BIP39 wallets retain their addresses; invalid TON
-mnemonic fails before activation; encrypted reload preserves type/address; every
-additional-address request fails without changing storage; no unsupported-policy panic.
+Tests: valid BIP39 wallets retain their existing addresses and derive the documented
+GRAM vector; a native-TON-only mnemonic remains rejected by normal KDF HD startup;
+encrypted reload preserves the same GRAM address; every additional-address request
+fails without changing storage.
 
 ### M3 — Async network client and activation/balance
 
@@ -584,8 +577,8 @@ integration-runs/ton-gram/
 - [ ] Copy the built binary and actual modified coins file; copy script/helper dependencies.
   Document prerequisites (`curl`, `jq`, config helper interpreter if used) and artifact
   checksums. Scripts must resolve paths relative to themselves and work outside repo CWD.
-- [ ] `start-kdf.sh hd` defaults to the workspace seed file and the proposed TON mnemonic
-  startup config. `start-kdf.sh iguana` uses the canonical phrase through existing Iguana
+- [ ] `start-kdf.sh hd` defaults to the private BIP39 control seed file and the standard
+  KDF HD startup config. `start-kdf.sh iguana` uses the canonical phrase through existing Iguana
   processing. Use `umask 077`, private config permissions, loopback RPC, generated RPC
   password and separate ports/DBs. Put JSON in files, not a secret-bearing argv.
   Do not enable shell tracing or copy `seed.txt` into the package.
@@ -606,8 +599,8 @@ exist; task routes and HD-specific cases apply as indicated):
 1. Start, authenticate, query version/health, load GRAM config, attach SSE client.
 2. Activate with immediate legacy and v2 APIs in separate clean runs; test v2 task
    activation/status/cancel. Assert wallet mode, network, decimals and address.
-3. For HD, assert the exact reference address. For Iguana, assert its independent
-   offline vector. Query balance and compare with a bounded contemporaneous provider
+3. For HD, assert the BIP39/SLIP-10 address derived from the private control fixture.
+   For Iguana, assert its independent offline vector. Query balance and compare with a bounded contemporaneous provider
    observation if enabled; do not require the original 1.777 after funds move.
 4. Validate UQ/EQ/raw representations and conversion; reject checksum/network errors.
 5. Query HD account balance, then request new address/account/scan through all supported
@@ -676,7 +669,7 @@ Do not label an unavailable environment or unrun feature gate as a passed check.
 ## 6. Completion criteria and implementation report
 
 - [ ] No production code path depends on the funded reference address or seed file.
-- [ ] HD reference matches; Iguana has its own repeatable address; both key modes work.
+- [ ] HD BIP39/SLIP-10 vector matches; Iguana has its own repeatable address; both key modes work.
 - [ ] Unsupported extra addresses/accounts/scanning fail explicitly with no mutations.
 - [ ] Real GRAM config loads from the modified coins repository.
 - [ ] Legacy/v2 activation, balance, withdraw, broadcast and history are tested.
@@ -733,18 +726,15 @@ Do not label an unavailable environment or unrun feature gate as a passed check.
   by legacy activation until the v2 TON activator is implemented. The source-linked
   suite now runs **17 tests passed**, including schema round trips and invalid
   version/subwallet/unknown-field checks, plus the wasm32 check.
-- Added `mnemonic_type: "ton"` HD startup selection and a separate
-  `KeyPairPolicy::TonMnemonic`. The native derivation implementation keeps only a
-  zeroizing 32-byte Ed25519 seed in the crypto context; BIP39-only coin builders and
-  offline key export report an explicit unsupported-policy error. A context key feeds
-  W5R1 construction and matches the public vector. The source-linked suite now runs
-  **18 tests passed**, and its separate crypto wrapper suite runs **2 tests passed**;
-  both compile for wasm32. Its disposable verifier also read the local numbered seed
-  and reproduced the public HD reference address without printing the phrase.
-- A BIP39 startup now also derives and retains the separate TON key only when the
-  same words pass native TON validation. This preserves the BIP39 key policy and
-  addresses for existing KDF coins while preparing native GRAM activation from the
-  same valid phrase; a BIP39-only phrase has no TON key and will be rejected by GRAM.
+- The initially implemented global `mnemonic_type: "ton"`, native TON key context,
+  and `KeyPairPolicy::TonMnemonic` were removed after the derivation-policy review:
+  they would prevent a native-TON-only phrase from deriving existing KDF HD coins.
+  KDF now keeps its normal BIP39 startup for all coins.
+- Added TEP-3 multichain GRAM derivation at `m/44'/607'/0'` from the existing
+  `GlobalHDAccountCtx`, with a public BIP39 seed→Ed25519 seed→non-bounceable W5R1
+  test vector. The control BIP39 phrase is stored outside the repository in a
+  mode-0600 file; only its public address is recorded above. The native TON reference
+  address remains a non-KDF HD reference because its phrase does not pass BIP39.
 - `cargo check --offline -p crypto --lib` reaches the existing `common` crate and stops
   on six `chrono` feature errors (`Utc::now`, `Local` and `DelayedFormat`) under the
   installed toolchain before `crypto` is checked. `cargo check --offline -p coins --lib`

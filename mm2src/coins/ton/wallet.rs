@@ -1,13 +1,8 @@
 use super::{TonAddress, TonNetwork};
-use crypto::TonMnemonicKey;
 use derive_more::Display;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::error::Error;
-use tonlib_core::wallet::{
-    mnemonic::{KeyPair, Mnemonic},
-    ton_wallet::TonWallet,
-    wallet_version::WalletVersion,
-};
+use tonlib_core::wallet::{mnemonic::KeyPair, ton_wallet::TonWallet, wallet_version::WalletVersion};
 use zeroize::Zeroize;
 
 const W5_CONTEXT_CLIENT: u32 = 1 << 31;
@@ -95,31 +90,8 @@ impl TonWalletParams {
             .map_err(|_| TonWalletError::WalletConstruction)
     }
 
-    /// Builds a W5R1 wallet using native TON mnemonic derivation.
-    pub fn wallet_from_mnemonic(self, mnemonic: &str) -> Result<TonWallet, TonWalletError> {
-        let mnemonic = Mnemonic::from_str(mnemonic, &None).map_err(|_| TonWalletError::InvalidMnemonic)?;
-        let key_pair = mnemonic.to_key_pair().map_err(|_| TonWalletError::KeyDerivation)?;
-        TonWallet::new_with_params(WalletVersion::V5R1, key_pair, self.workchain as i32, self.wallet_id())
-            .map_err(|_| TonWalletError::WalletConstruction)
-    }
-
-    /// Builds a W5R1 wallet from a native TON mnemonic key held by `CryptoCtx`.
-    pub fn wallet_from_ton_mnemonic_key(self, key: &TonMnemonicKey) -> Result<TonWallet, TonWalletError> {
-        self.wallet_from_seed(key.ed25519_seed())
-    }
-
     pub fn address_from_seed(self, seed: &[u8; 32]) -> Result<TonAddress, TonWalletError> {
         let wallet = self.wallet_from_seed(seed)?;
-        Ok(TonAddress::from_inner(wallet.address))
-    }
-
-    pub fn address_from_mnemonic(self, mnemonic: &str) -> Result<TonAddress, TonWalletError> {
-        let wallet = self.wallet_from_mnemonic(mnemonic)?;
-        Ok(TonAddress::from_inner(wallet.address))
-    }
-
-    pub fn address_from_ton_mnemonic_key(self, key: &TonMnemonicKey) -> Result<TonAddress, TonWalletError> {
-        let wallet = self.wallet_from_ton_mnemonic_key(key)?;
         Ok(TonAddress::from_inner(wallet.address))
     }
 }
@@ -128,10 +100,6 @@ impl TonWalletParams {
 pub enum TonWalletError {
     #[display(fmt = "Invalid TON W5 subwallet ID: {_0}")]
     InvalidSubwalletId(u16),
-    #[display(fmt = "Invalid TON mnemonic")]
-    InvalidMnemonic,
-    #[display(fmt = "Unable to derive TON key pair")]
-    KeyDerivation,
     #[display(fmt = "Unable to construct TON W5R1 wallet")]
     WalletConstruction,
 }
@@ -146,49 +114,6 @@ mod tests {
 
     const IGUANA_PASSPHRASE_VECTOR: &str = "kdf-ton-iguana-vector";
     const IGUANA_W5_MAINNET_VECTOR: &str = "UQBZfhh5F-CFw-1L978b7jrJ0c3FUlssE8jk2ueScxRHleke";
-    const TON_MNEMONIC_VECTOR: &str =
-        "section garden tomato dinner season dice renew length useful spin trade intact use universe what post spike keen mandate behind concert egg doll rug";
-    const TON_W5_MAINNET_VECTOR: &str = "UQDv2YSmlrlLH3hLNOVxC8FcQf4F9eGNs4vb2zKma4txo6i3";
-
-    #[test]
-    fn native_ton_mnemonic_derives_the_w5_mainnet_vector() {
-        let address = TonWalletParams::MAINNET_DEFAULT
-            .address_from_mnemonic(TON_MNEMONIC_VECTOR)
-            .unwrap();
-
-        assert_eq!(
-            address.format(
-                TonAddressFormat::Friendly {
-                    bounceable: false,
-                    urlsafe: true,
-                },
-                TonNetwork::Mainnet,
-            ),
-            TON_W5_MAINNET_VECTOR,
-        );
-        assert_eq!(TonWalletParams::MAINNET_DEFAULT.wallet_id(), 0x7fff_ff11);
-        assert_eq!(TonWalletParams::TESTNET_DEFAULT.wallet_id(), 0x7fff_fffd);
-    }
-
-    #[test]
-    fn native_ton_key_context_derives_the_w5_mainnet_vector() {
-        let key = TonMnemonicKey::from_mnemonic(TON_MNEMONIC_VECTOR).unwrap();
-        let address = TonWalletParams::MAINNET_DEFAULT
-            .address_from_ton_mnemonic_key(&key)
-            .unwrap();
-
-        assert_eq!(
-            address.format(
-                TonAddressFormat::Friendly {
-                    bounceable: false,
-                    urlsafe: true,
-                },
-                TonNetwork::Mainnet,
-            ),
-            TON_W5_MAINNET_VECTOR,
-        );
-    }
-
     #[test]
     fn seed_wallets_and_subwallets_are_deterministic() {
         let seed = [7; 32];

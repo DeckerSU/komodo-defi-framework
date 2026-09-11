@@ -114,8 +114,7 @@ mod tests {
         tlb::TLB,
     };
 
-    const TON_MNEMONIC_VECTOR: &str =
-        "section garden tomato dinner season dice renew length useful spin trade intact use universe what post spike keen mandate behind concert egg doll rug";
+    const SIGNING_SEED: [u8; 32] = [0x42; 32];
     const DESTINATION: &str = "UQBYGTsWwxh00p3Fq_EdwzQ2uRzuptfxP5crEOsfRT6zDOS4";
 
     fn request() -> TonTransferRequest {
@@ -132,7 +131,7 @@ mod tests {
     #[test]
     fn builds_a_serializable_deploy_transfer() {
         let wallet = TonWalletParams::MAINNET_DEFAULT
-            .wallet_from_mnemonic(TON_MNEMONIC_VECTOR)
+            .wallet_from_seed(&SIGNING_SEED)
             .unwrap();
         let signed = build_signed_transfer(&wallet, TonNetwork::Mainnet, &request()).unwrap();
         let external = Message::from_boc(&signed.boc).unwrap();
@@ -165,7 +164,7 @@ mod tests {
     #[test]
     fn rejects_network_and_bounce_mode_conflicts() {
         let wallet = TonWalletParams::MAINNET_DEFAULT
-            .wallet_from_mnemonic(TON_MNEMONIC_VECTOR)
+            .wallet_from_seed(&SIGNING_SEED)
             .unwrap();
         let mut request = request();
 

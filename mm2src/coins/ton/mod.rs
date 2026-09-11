@@ -6,12 +6,14 @@
 
 mod address;
 mod amount;
+mod hd;
 mod protocol;
 mod transaction;
 mod wallet;
 
 pub use address::{TonAddress, TonAddressError, TonAddressFormat, TonNetwork};
 pub use amount::{TonAmount, TonAmountError};
+pub use hd::{derive_ton_hd_seed, TonHdDerivationError, TON_MULTICHAIN_DERIVATION_PATH};
 pub use protocol::{TonProtocolInfo, TonWalletVersion};
 pub use transaction::{build_signed_transfer, TonSignedTransfer, TonTransferError, TonTransferRequest};
 pub use wallet::{TonSubwalletId, TonWalletError, TonWalletParams};

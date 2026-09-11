@@ -32,36 +32,6 @@ mod mnemonics_wasm_db;
 
 type WalletInitResult<T> = Result<T, MmError<WalletInitError>>;
 
-/// Mnemonic derivation policy selected for HD wallet startup.
-///
-/// The default remains BIP39 for all existing wallets. Native TON words use a
-/// different validation and derivation algorithm and therefore require an explicit
-/// opt-in instead of being accepted by the BIP39 path.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum HdMnemonicType {
-    Bip39,
-    Ton,
-}
-
-fn hd_mnemonic_type(ctx: &MmArc) -> WalletInitResult<HdMnemonicType> {
-    parse_hd_mnemonic_type(ctx.conf["mnemonic_type"].as_str()).map_err(|error| {
-        MmError::new(WalletInitError::ErrorDeserializingConfig {
-            field: "mnemonic_type".to_owned(),
-            error,
-        })
-    })
-}
-
-fn parse_hd_mnemonic_type(value: Option<&str>) -> Result<HdMnemonicType, String> {
-    match value {
-        None | Some("bip39") => Ok(HdMnemonicType::Bip39),
-        Some("ton") => Ok(HdMnemonicType::Ton),
-        Some(value) => Err(format!(
-            "unsupported mnemonic type '{value}', expected 'bip39' or 'ton'"
-        )),
-    }
-}
-
 #[derive(Debug, Deserialize, Display, EnumFromStringify, Serialize)]
 pub enum WalletInitError {
     #[display(fmt = "Error deserializing '{field}' config field: {error}")]
@@ -237,11 +207,6 @@ async fn retrieve_or_create_passphrase(
             Ok(Some(passphrase_from_file))
         },
         None => {
-            if hd_mnemonic_type(ctx)? == HdMnemonicType::Ton {
-                return MmError::err(WalletInitError::MnemonicError(
-                    "automatic TON mnemonic generation is not implemented; provide an existing TON mnemonic".to_owned(),
-                ));
-            }
             if wallet_password.is_empty() {
                 return MmError::err(WalletInitError::PasswordPolicyViolation(
                     "`wallet_password` cannot be empty".to_string(),
@@ -371,21 +336,10 @@ async fn process_passphrase_logic(
 }
 
 fn initialize_crypto_context(ctx: &MmArc, passphrase: &str) -> WalletInitResult<()> {
-    let mnemonic_type = hd_mnemonic_type(ctx)?;
-    match (ctx.enable_hd(), mnemonic_type) {
-        (true, HdMnemonicType::Bip39) => {
-            CryptoCtx::init_with_global_hd_account(ctx.clone(), passphrase).map_mm_err()?
-        },
-        (true, HdMnemonicType::Ton) => CryptoCtx::init_with_ton_mnemonic(ctx.clone(), passphrase).map_mm_err()?,
-        (false, HdMnemonicType::Bip39) => {
-            CryptoCtx::init_with_iguana_passphrase(ctx.clone(), passphrase).map_mm_err()?
-        },
-        (false, HdMnemonicType::Ton) => {
-            return MmError::err(WalletInitError::ErrorDeserializingConfig {
-                field: "mnemonic_type".to_owned(),
-                error: "'ton' requires enable_hd: true".to_owned(),
-            });
-        },
+    // This defaults to false to maintain backward compatibility.
+    match ctx.enable_hd() {
+        true => CryptoCtx::init_with_global_hd_account(ctx.clone(), passphrase).map_mm_err()?,
+        false => CryptoCtx::init_with_iguana_passphrase(ctx.clone(), passphrase).map_mm_err()?,
     };
     Ok(())
 }

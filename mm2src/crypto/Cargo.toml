@@ -32,10 +32,8 @@ keys = { path = "../mm2_bitcoin/keys" }
 lazy_static.workspace = true
 mm2_core = { path = "../mm2_core" }
 mm2_err_handle = { path = "../mm2_err_handle" }
-nacl.workspace = true
 num-traits.workspace = true
 parking_lot = { workspace = true }
-pbkdf2 = "0.12.2"
 primitives = { path = "../mm2_bitcoin/primitives" }
 rpc = { path = "../mm2_bitcoin/rpc" }
 rpc_task = { path = "../rpc_task" }

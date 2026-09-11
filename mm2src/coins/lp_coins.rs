@@ -4651,7 +4651,6 @@ impl PrivKeyBuildPolicy {
                 crypto_ctx.mm2_internal_privkey_secret(),
             )),
             KeyPairPolicy::GlobalHDAccount(global_hd) => Ok(PrivKeyBuildPolicy::GlobalHDAccount(global_hd.clone())),
-            KeyPairPolicy::TonMnemonic => Err(MmError::new(CryptoCtxError::TonMnemonicPolicy)),
         }
     }
 }
