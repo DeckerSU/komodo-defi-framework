@@ -17,6 +17,7 @@ const TONCENTER_V2_ESTIMATE_FEE: &str = "estimateFee";
 const TONCENTER_V2_GET_TRANSACTIONS: &str = "getTransactions";
 const TONCENTER_V2_RUN_GET_METHOD: &str = "runGetMethod";
 const TONCENTER_V2_SEND_BOC_RETURN_HASH: &str = "sendBocReturnHash";
+const TONCENTER_V3_TRANSACTIONS_BY_MESSAGE: &str = "/api/v3/transactionsByMessage";
 const MAX_BOC_BYTES: usize = 1024 * 1024;
 const MAX_TRANSACTION_PAGE_SIZE: u8 = 100;
 #[cfg(target_arch = "wasm32")]
@@ -145,6 +146,18 @@ impl TonRpcClientPool {
     pub async fn send_boc_return_hash(&self, boc: &[u8]) -> Result<TonBroadcastResult, TonRpcError> {
         let client = self.clients.first().ok_or(TonRpcError::NoEndpoints)?;
         client.send_boc_return_hash(boc).await
+    }
+
+    pub async fn message_masterchain_seqno(&self, message_hash: &str) -> Result<Option<u64>, TonRpcError> {
+        let mut last_error = None;
+        for client in &self.clients {
+            match client.message_masterchain_seqno(message_hash).await {
+                Ok(result) => return Ok(result),
+                Err(error) if error.is_retryable() => last_error = Some(error),
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_error.unwrap_or(TonRpcError::NoEndpoints))
     }
 }
 
@@ -326,6 +339,20 @@ impl TonRpcClient {
 
         let response = self.post(url, body).await?;
         parse_broadcast_result(&response)
+    }
+
+    pub async fn message_masterchain_seqno(&self, message_hash: &str) -> Result<Option<u64>, TonRpcError> {
+        if message_hash.is_empty() || message_hash.len() > 256 {
+            return Err(TonRpcError::InvalidResponse);
+        }
+        let mut url = self.endpoint.clone();
+        url.set_path(TONCENTER_V3_TRANSACTIONS_BY_MESSAGE);
+        url.set_query(None);
+        url.query_pairs_mut()
+            .append_pair("msg_hash", message_hash)
+            .append_pair("limit", "1");
+        let response = self.get(url).await?;
+        parse_message_masterchain_seqno(&response)
     }
 
     async fn get(&self, url: Url) -> Result<Vec<u8>, TonRpcError> {
@@ -772,6 +799,18 @@ fn parse_broadcast_result(bytes: &[u8]) -> Result<TonBroadcastResult, TonRpcErro
         .map(str::to_owned)
         .ok_or(TonRpcError::InvalidResponse)?;
     Ok(TonBroadcastResult { message_hash })
+}
+
+fn parse_message_masterchain_seqno(bytes: &[u8]) -> Result<Option<u64>, TonRpcError> {
+    let response: Json = json::from_slice(bytes).map_err(|_| TonRpcError::InvalidResponse)?;
+    let transactions = response
+        .get("transactions")
+        .and_then(Json::as_array)
+        .ok_or(TonRpcError::InvalidResponse)?;
+    match transactions.first() {
+        None => Ok(None),
+        Some(transaction) => parse_u64(transaction.get("mc_block_seqno")).map(Some),
+    }
 }
 
 fn validate_boc(boc: &[u8]) -> Result<(), TonRpcError> {

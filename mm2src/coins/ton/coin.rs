@@ -246,10 +246,8 @@ impl MarketCoinOps for TonCoin {
 
     fn wait_for_confirmations(&self, input: ConfirmPaymentInput) -> Box<dyn Future<Item = (), Error = String> + Send> {
         let message_hash = try_fus!(external_message_hash(&input.payment_tx));
-        if input.confirmations != 1 || input.requires_nota {
-            return Box::new(futures01::future::err(
-                "TON currently supports one account-inclusion confirmation only".to_owned(),
-            ));
+        if input.confirmations == 0 || input.requires_nota {
+            return Box::new(futures01::future::err("TON does not support notarization".to_owned()));
         }
         if input.check_every == 0 {
             return Box::new(futures01::future::err(
@@ -270,8 +268,21 @@ impl MarketCoinOps for TonCoin {
                             .as_deref()
                             .map_or(false, |hash| ton_hashes_equal(&message_hash, hash))
                     }) {
-                        coin.remove_pending_message(&message_hash);
-                        return Ok(());
+                        let included_at = coin
+                            .0
+                            .wallet
+                            .message_masterchain_seqno(&message_hash)
+                            .await
+                            .map_err(|error| error.to_string())?
+                            .ok_or_else(|| "TON v3 has not indexed the included message yet".to_owned())?;
+                        let current = coin.current_block_number().await.map_err(|error| error.to_string())?;
+                        let required = included_at
+                            .checked_add(input.confirmations - 1)
+                            .ok_or_else(|| "TON confirmation height overflow".to_owned())?;
+                        if current >= required {
+                            coin.remove_pending_message(&message_hash);
+                            return Ok(());
+                        }
                     }
                     if now_sec() >= input.wait_until {
                         return Err("Timed out waiting for TON account transaction inclusion".to_owned());
