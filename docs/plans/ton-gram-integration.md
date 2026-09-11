@@ -492,8 +492,9 @@ HTTP endpoints currently live in `ethereum/TRX`; do not infer a `tron/` director
   Provider credentials are not stored in the coins repository.
 - [x] Ensure GRAM is classified as a native TON platform with HTTP nodes, never an
   Electrum/UTXO/EVM coin. The config generator reads `ton/GRAM` directly.
-- [ ] Update README classification; add only legitimate existing branding if needed.
-  Avoid unrelated icon/config regeneration or network scans during this change.
+- [x] Update README classification on the matching coins branch at `91f539e9` to list
+  the native GRAM wallet under TON and remove TON from future-only protocols. Avoided
+  unrelated icon/config regeneration and network scans.
 - [x] Validate JSON, ticker uniqueness, exact decimals/network/W5 settings, provider and
   explorer fixtures, plus generator Python syntax. KDF must load the actual updated
   coins artifact successfully once `TonCoin` activation exists.
