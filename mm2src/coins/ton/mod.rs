@@ -21,8 +21,8 @@ pub use activation::{TonActivationError, TonActivationRequest, TonCoinConfig, To
 pub use address::{TonAddress, TonAddressError, TonAddressFormat, TonNetwork};
 pub use amount::{TonAmount, TonAmountError};
 pub use client::{
-    TonAccountState, TonBroadcastResult, TonFeeComponent, TonFeeEstimate, TonFeeEstimateRequest, TonRpcClient,
-    TonRpcClientPool, TonRpcError, TonRpcNode, TonWalletInformation,
+    TonAccountState, TonAccountTransaction, TonBroadcastResult, TonFeeComponent, TonFeeEstimate, TonFeeEstimateRequest,
+    TonRpcClient, TonRpcClientPool, TonRpcError, TonRpcNode, TonWalletInformation,
 };
 pub use coin::TonCoin;
 pub use fee::{TonFeeComponentDetails, TonTxFeeDetails};

@@ -14,6 +14,7 @@ const TON_RPC_TIMEOUT: Duration = Duration::from_secs(15);
 const TONCENTER_V2_WALLET_INFORMATION: &str = "getWalletInformation";
 const TONCENTER_V2_MASTERCHAIN_INFO: &str = "getMasterchainInfo";
 const TONCENTER_V2_ESTIMATE_FEE: &str = "estimateFee";
+const TONCENTER_V2_GET_TRANSACTIONS: &str = "getTransactions";
 const TONCENTER_V2_RUN_GET_METHOD: &str = "runGetMethod";
 const TONCENTER_V2_SEND_BOC_RETURN_HASH: &str = "sendBocReturnHash";
 const MAX_BOC_BYTES: usize = 1024 * 1024;
@@ -107,6 +108,22 @@ impl TonRpcClientPool {
         for client in &self.clients {
             match client.estimate_fee(request).await {
                 Ok(fee) => return Ok(fee),
+                Err(error) if error.is_retryable() => last_error = Some(error),
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_error.unwrap_or(TonRpcError::NoEndpoints))
+    }
+
+    pub async fn account_transactions(
+        &self,
+        address: &TonAddress,
+        limit: u8,
+    ) -> Result<Vec<TonAccountTransaction>, TonRpcError> {
+        let mut last_error = None;
+        for client in &self.clients {
+            match client.account_transactions(address, limit).await {
+                Ok(transactions) => return Ok(transactions),
                 Err(error) if error.is_retryable() => last_error = Some(error),
                 Err(error) => return Err(error),
             }
@@ -216,6 +233,28 @@ impl TonRpcClient {
             .map_err(|_| TonRpcError::InvalidEndpoint)?;
         let response = self.post(url, body).await?;
         parse_fee_estimate(&response)
+    }
+
+    /// Returns the newest account transactions first. Pagination and durable
+    /// history storage are deliberately owned by the history layer, not this
+    /// narrow transport client.
+    pub async fn account_transactions(
+        &self,
+        address: &TonAddress,
+        limit: u8,
+    ) -> Result<Vec<TonAccountTransaction>, TonRpcError> {
+        if limit == 0 {
+            return Err(TonRpcError::InvalidTransactionQuery);
+        }
+        let mut url = self
+            .endpoint
+            .join(TONCENTER_V2_GET_TRANSACTIONS)
+            .map_err(|_| TonRpcError::InvalidEndpoint)?;
+        url.query_pairs_mut()
+            .append_pair("address", &self.format_address(address)?)
+            .append_pair("limit", &limit.to_string());
+        let response = self.get(url).await?;
+        parse_account_transactions(&response)
     }
 
     fn format_address(&self, address: &TonAddress) -> Result<String, TonRpcError> {
@@ -375,6 +414,18 @@ pub struct TonWalletInformation {
     pub wallet_type: Option<String>,
 }
 
+/// Minimal transaction fields needed for later confirmation and history code.
+/// Values remain in native wire units until the domain layer applies accounting.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TonAccountTransaction {
+    pub logical_time: String,
+    pub hash: String,
+    pub timestamp: u64,
+    pub fee: TonAmount,
+    pub inbound_message_hash: Option<String>,
+    pub outbound_message_hashes: Vec<String>,
+}
+
 /// The BOC components expected by TON Center's `estimateFee` endpoint.
 pub struct TonFeeEstimateRequest {
     pub address: TonAddress,
@@ -451,6 +502,8 @@ pub enum TonRpcError {
     InvalidBoc,
     #[display(fmt = "TON fee estimation requires both init code and init data, or neither")]
     InvalidFeeEstimateRequest,
+    #[display(fmt = "TON transaction query limit must be greater than zero")]
+    InvalidTransactionQuery,
     #[display(fmt = "TON RPC rejected the request: {_0}")]
     Remote(String),
 }
@@ -566,6 +619,58 @@ fn parse_fee_estimate(bytes: &[u8]) -> Result<TonFeeEstimate, TonRpcError> {
     Ok(TonFeeEstimate { source, destinations })
 }
 
+fn parse_account_transactions(bytes: &[u8]) -> Result<Vec<TonAccountTransaction>, TonRpcError> {
+    let response: Json = json::from_slice(bytes).map_err(|_| TonRpcError::InvalidResponse)?;
+    let result = parse_success_result(&response)?;
+    let transactions = result.as_array().ok_or(TonRpcError::InvalidResponse)?;
+    transactions.iter().map(parse_account_transaction).collect()
+}
+
+fn parse_account_transaction(value: &Json) -> Result<TonAccountTransaction, TonRpcError> {
+    let id = value.get("transaction_id").ok_or(TonRpcError::InvalidResponse)?;
+    let logical_time = parse_decimal_string(id.get("lt"))?;
+    let hash = parse_hash(id.get("hash"))?;
+    let timestamp = parse_u64(value.get("utime"))?;
+    let fee = TonAmount::from_nano(parse_u64(value.get("fee"))?);
+    let inbound_message_hash = value
+        .get("in_msg")
+        .map(|message| parse_hash(message.get("hash")))
+        .transpose()?;
+    let outbound_message_hashes = value
+        .get("out_msgs")
+        .and_then(Json::as_array)
+        .ok_or(TonRpcError::InvalidResponse)?
+        .iter()
+        .map(|message| parse_hash(message.get("hash")))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(TonAccountTransaction {
+        logical_time,
+        hash,
+        timestamp,
+        fee,
+        inbound_message_hash,
+        outbound_message_hashes,
+    })
+}
+
+fn parse_decimal_string(value: Option<&Json>) -> Result<String, TonRpcError> {
+    match value {
+        Some(Json::String(value)) if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) => {
+            Ok(value.to_owned())
+        },
+        Some(Json::Number(value)) if value.as_u64().is_some() => Ok(value.to_string()),
+        _ => Err(TonRpcError::InvalidResponse),
+    }
+}
+
+fn parse_hash(value: Option<&Json>) -> Result<String, TonRpcError> {
+    value
+        .and_then(Json::as_str)
+        .filter(|hash| !hash.is_empty() && hash.len() <= 256 && hash.trim() == *hash)
+        .map(str::to_owned)
+        .ok_or(TonRpcError::InvalidResponse)
+}
+
 fn parse_broadcast_result(bytes: &[u8]) -> Result<TonBroadcastResult, TonRpcError> {
     let response: Json = json::from_slice(bytes).map_err(|_| TonRpcError::InvalidResponse)?;
     let result = parse_success_result(&response)?;
@@ -604,6 +709,17 @@ mod tests {
         assert_eq!(info.account_state, TonAccountState::Active);
         assert_eq!(info.sequence_number, Some(3));
         assert_eq!(info.wallet_type.as_deref(), Some("v5r1"));
+    }
+
+    #[test]
+    fn parses_newest_first_account_transactions_without_losing_wire_identifiers() {
+        let transactions = parse_account_transactions(br#"{"ok":true,"result":[{"utime":1700000000,"transaction_id":{"lt":"123","hash":"transaction-hash"},"fee":"42","in_msg":{"hash":"inbound-hash"},"out_msgs":[{"hash":"outbound-hash"}]}]}"#).unwrap();
+
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].logical_time, "123");
+        assert_eq!(transactions[0].fee, TonAmount::from_nano(42));
+        assert_eq!(transactions[0].inbound_message_hash.as_deref(), Some("inbound-hash"));
+        assert_eq!(transactions[0].outbound_message_hashes, ["outbound-hash"]);
     }
 
     #[test]
