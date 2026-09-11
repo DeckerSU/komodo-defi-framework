@@ -224,9 +224,12 @@ impl MarketCoinOps for TonCoin {
     }
 
     fn current_block(&self) -> Box<dyn Future<Item = u64, Error = String> + Send> {
-        Box::new(futures01::future::err(
-            "TON masterchain lookup is not implemented".to_owned(),
-        ))
+        let coin = self.clone();
+        Box::new(
+            async move { coin.0.wallet.current_block().await.map_err(|error| error.to_string()) }
+                .boxed()
+                .compat(),
+        )
     }
 
     fn display_priv_key(&self) -> Result<String, String> {
@@ -414,6 +417,10 @@ impl TonCoin {
 
     pub async fn wallet_information(&self) -> Result<TonWalletInformation, TonActivationError> {
         self.0.wallet.wallet_information().await
+    }
+
+    pub async fn current_block_number(&self) -> Result<u64, TonActivationError> {
+        self.0.wallet.current_block().await
     }
 }
 

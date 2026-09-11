@@ -416,7 +416,8 @@ fails without changing storage.
   `getWalletInformation` omits `seqno`; it validates a successful numeric stack result
   and never turns a missing value into zero. Add bounded `sendBocReturnHash` support
   for already-signed BOCs; its result is deliberately a provider message reference,
-  not a confirmed account transaction. Masterchain-head, fee and history calls remain
+  not a confirmed account transaction. The bounded read pool also obtains the
+  masterchain sequence number from `getMasterchainInfo`; fee and history calls remain
   for their consuming milestones.
 - [ ] Distinguish nonexist/uninitialized, active, frozen and unknown states. A typed
   transfer-state helper now permits StateInit only for uninitialized accounts, requires

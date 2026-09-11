@@ -12,6 +12,7 @@ use zeroize::Zeroizing;
 
 const TON_RPC_TIMEOUT: Duration = Duration::from_secs(15);
 const TONCENTER_V2_WALLET_INFORMATION: &str = "getWalletInformation";
+const TONCENTER_V2_MASTERCHAIN_INFO: &str = "getMasterchainInfo";
 const TONCENTER_V2_RUN_GET_METHOD: &str = "runGetMethod";
 const TONCENTER_V2_SEND_BOC_RETURN_HASH: &str = "sendBocReturnHash";
 const MAX_BOC_BYTES: usize = 1024 * 1024;
@@ -88,6 +89,18 @@ impl TonRpcClientPool {
         Err(last_error.unwrap_or(TonRpcError::NoEndpoints))
     }
 
+    pub async fn current_block(&self) -> Result<u64, TonRpcError> {
+        let mut last_error = None;
+        for client in &self.clients {
+            match client.current_block().await {
+                Ok(block) => return Ok(block),
+                Err(error) if error.is_retryable() => last_error = Some(error),
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_error.unwrap_or(TonRpcError::NoEndpoints))
+    }
+
     /// Submits through the configured primary endpoint exactly once.
     pub async fn send_boc_return_hash(&self, boc: &[u8]) -> Result<TonBroadcastResult, TonRpcError> {
         let client = self.clients.first().ok_or(TonRpcError::NoEndpoints)?;
@@ -147,6 +160,16 @@ impl TonRpcClient {
             information.sequence_number = Some(self.get_method_seqno(address).await?);
         }
         Ok(information)
+    }
+
+    /// Returns the latest masterchain sequence number reported by TON Center.
+    pub async fn current_block(&self) -> Result<u64, TonRpcError> {
+        let url = self
+            .endpoint
+            .join(TONCENTER_V2_MASTERCHAIN_INFO)
+            .map_err(|_| TonRpcError::InvalidEndpoint)?;
+        let response = self.get(url).await?;
+        parse_masterchain_sequence_number(&response)
     }
 
     fn format_address(&self, address: &TonAddress) -> Result<String, TonRpcError> {
@@ -418,6 +441,12 @@ fn parse_get_method_seqno(bytes: &[u8]) -> Result<u32, TonRpcError> {
     Ok(value)
 }
 
+fn parse_masterchain_sequence_number(bytes: &[u8]) -> Result<u64, TonRpcError> {
+    let response: Json = json::from_slice(bytes).map_err(|_| TonRpcError::InvalidResponse)?;
+    let result = parse_success_result(&response)?;
+    parse_u64(result.get("last").and_then(|last| last.get("seqno")))
+}
+
 fn parse_broadcast_result(bytes: &[u8]) -> Result<TonBroadcastResult, TonRpcError> {
     let response: Json = json::from_slice(bytes).map_err(|_| TonRpcError::InvalidResponse)?;
     let result = parse_success_result(&response)?;
@@ -481,6 +510,18 @@ mod tests {
         );
         assert_eq!(
             parse_get_method_seqno(br#"{"ok":true,"result":{"exit_code":0,"stack":[["num","42"]]}}"#),
+            Err(TonRpcError::InvalidResponse),
+        );
+    }
+
+    #[test]
+    fn parses_the_masterchain_sequence_number() {
+        assert_eq!(
+            parse_masterchain_sequence_number(br#"{"ok":true,"result":{"last":{"seqno":12345678}}}"#),
+            Ok(12_345_678),
+        );
+        assert_eq!(
+            parse_masterchain_sequence_number(br#"{"ok":true,"result":{"last":{}}}"#),
             Err(TonRpcError::InvalidResponse),
         );
     }

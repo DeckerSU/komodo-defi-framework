@@ -170,6 +170,10 @@ impl TonWalletContext {
             .map_err(TonActivationError::Rpc)
     }
 
+    pub async fn current_block(&self) -> Result<u64, TonActivationError> {
+        self.rpc.current_block().await.map_err(TonActivationError::Rpc)
+    }
+
     /// Checks the account state before a coin is registered. An uninitialized
     /// account is valid: its first W5 transfer will deploy the wallet contract.
     pub async fn validate_account_state(&self) -> Result<TonWalletInformation, TonActivationError> {
