@@ -7,15 +7,20 @@ repo_dir=$(CDPATH= cd -- "$script_dir/../.." && pwd)
 workspace_dir=$(CDPATH= cd -- "$repo_dir/.." && pwd)
 coins_dir=${KDF_TON_COINS_DIR:-"$workspace_dir/coins"}
 runtime_dir=${KDF_TON_RUNTIME_DIR:-"$workspace_dir/integration-runs/ton-gram"}
+kdf_binary=${KDF_TON_BINARY:-}
 
-command -v cargo >/dev/null
 command -v sha256sum >/dev/null
 test -f "$coins_dir/coins"
 test -f "$coins_dir/ton/GRAM"
 
 mkdir -p "$runtime_dir"/{config,db/hd,db/iguana,logs,results}
-cargo +1.90.0 build --release --offline -p mm2_bin_lib --bin kdf
-install -m 0700 "$repo_dir/target/release/kdf" "$runtime_dir/kdf"
+if [[ -z "$kdf_binary" ]]; then
+  command -v cargo >/dev/null
+  cargo +1.90.0 build --release --offline -p mm2_bin_lib --bin kdf
+  kdf_binary="$repo_dir/target/release/kdf"
+fi
+test -x "$kdf_binary"
+install -m 0700 "$kdf_binary" "$runtime_dir/kdf"
 install -m 0600 "$coins_dir/coins" "$runtime_dir/coins"
 mkdir -p "$runtime_dir/ton"
 install -m 0600 "$coins_dir/ton/GRAM" "$runtime_dir/ton/GRAM"

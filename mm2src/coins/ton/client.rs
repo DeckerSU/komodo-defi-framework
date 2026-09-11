@@ -1,12 +1,13 @@
 use super::{TonAddress, TonAddressFormat, TonAmount, TonNetwork};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use common::custom_futures::timeout::FutureTimerExt;
+use common::{custom_futures::timeout::FutureTimerExt, executor::Timer};
 use derive_more::Display;
+use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{self as json, Value as Json};
 use std::convert::TryFrom;
 use std::error::Error;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use url::Url;
 use zeroize::Zeroizing;
 
@@ -20,6 +21,9 @@ const TONCENTER_V2_SEND_BOC_RETURN_HASH: &str = "sendBocReturnHash";
 const TONCENTER_V3_TRANSACTIONS_BY_MESSAGE: &str = "/api/v3/transactionsByMessage";
 const MAX_BOC_BYTES: usize = 1024 * 1024;
 const MAX_TRANSACTION_PAGE_SIZE: u8 = 100;
+/// TON Center's anonymous API allowance is one request per second. A client
+/// supplied API key uses the provider's authenticated allowance instead.
+const PUBLIC_API_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(target_arch = "wasm32")]
 const TON_API_KEY_HEADER: &str = "X-API-Key";
 
@@ -31,6 +35,7 @@ pub struct TonRpcClient {
     endpoint: Url,
     api_key: Option<Zeroizing<String>>,
     network: TonNetwork,
+    next_public_request_at: Mutex<Option<Instant>>,
 }
 
 /// One TON Center-compatible endpoint supplied at activation time.
@@ -189,6 +194,7 @@ impl TonRpcClient {
             endpoint,
             api_key: api_key.filter(|key| !key.trim().is_empty()).map(Zeroizing::new),
             network,
+            next_public_request_at: Mutex::new(None),
         })
     }
 
@@ -371,6 +377,7 @@ impl TonRpcClient {
     }
 
     async fn get(&self, url: Url) -> Result<Vec<u8>, TonRpcError> {
+        self.throttle_public_request().await;
         #[cfg(not(target_arch = "wasm32"))]
         {
             use http::header::{HeaderName, HeaderValue};
@@ -415,6 +422,7 @@ impl TonRpcClient {
     }
 
     async fn post(&self, url: Url, body: Vec<u8>) -> Result<Vec<u8>, TonRpcError> {
+        self.throttle_public_request().await;
         #[cfg(not(target_arch = "wasm32"))]
         {
             use http::header::{HeaderName, HeaderValue, CONTENT_TYPE};
@@ -462,6 +470,28 @@ impl TonRpcClient {
             }
         }
     }
+
+    async fn throttle_public_request(&self) {
+        if self.api_key.is_some() {
+            return;
+        }
+        let delay = {
+            let mut next_request_at = self.next_public_request_at.lock();
+            reserve_public_request_slot(&mut next_request_at, Instant::now())
+        };
+        if !delay.is_zero() {
+            Timer::sleep(delay.as_secs_f64()).await;
+        }
+    }
+}
+
+fn reserve_public_request_slot(next_request_at: &mut Option<Instant>, now: Instant) -> Duration {
+    let scheduled_at = match *next_request_at {
+        Some(next) if next > now => next,
+        Some(_) | None => now,
+    };
+    *next_request_at = scheduled_at.checked_add(PUBLIC_API_REQUEST_INTERVAL);
+    scheduled_at.saturating_duration_since(now)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1104,5 +1134,18 @@ mod tests {
         assert!(TonRpcError::HttpStatus(503).is_retryable());
         assert!(!TonRpcError::HttpStatus(400).is_retryable());
         assert!(!TonRpcError::InvalidResponse.is_retryable());
+    }
+
+    #[test]
+    fn reserves_non_overlapping_slots_for_anonymous_requests() {
+        let now = Instant::now();
+        let mut next = None;
+
+        assert_eq!(reserve_public_request_slot(&mut next, now), Duration::ZERO);
+        assert_eq!(reserve_public_request_slot(&mut next, now), PUBLIC_API_REQUEST_INTERVAL);
+        assert_eq!(
+            reserve_public_request_slot(&mut next, now + Duration::from_millis(500)),
+            Duration::from_millis(1500),
+        );
     }
 }

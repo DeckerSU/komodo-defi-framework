@@ -6730,5 +6730,8 @@ fn orderbook_address(
         CoinProtocol::SIA => Ok(OrderbookAddress::Shielded),
         CoinProtocol::SOLANA(_) => MmError::err(OrderbookAddrErr::CoinIsNotSupported(coin.to_owned())),
         CoinProtocol::SOLANATOKEN(_) => MmError::err(OrderbookAddrErr::CoinIsNotSupported(coin.to_owned())),
+        // GRAM is a wallet-only TON integration. Orderbook entries require a
+        // swap-capable public-key address, which W5 contract wallets do not expose.
+        CoinProtocol::TON(_) => MmError::err(OrderbookAddrErr::CoinIsNotSupported(coin.to_owned())),
     }
 }

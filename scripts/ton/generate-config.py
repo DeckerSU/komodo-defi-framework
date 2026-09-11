@@ -26,12 +26,25 @@ def main() -> int:
     # Iguana private-key material rather than a native TON mnemonic.
     config = {
         "gui": "nogui",
-        "netid": 7777 if mode == "hd" else 7778,
-        "rpc_password": secrets.token_urlsafe(32),
+        # The shared KDF test network used by this runtime. The modes use
+        # separate databases and RPC ports, so they can safely share netid.
+        "netid": 6133,
+        # KDF validates that the RPC password has a special character. URL-safe
+        # random output can consist solely of letters and digits, so append a
+        # known punctuation character to make every generated config valid.
+        "rpc_password": f"{secrets.token_urlsafe(32)}!",
         "passphrase": seed,
+        # KDF only builds GlobalHDAccountCtx when this is enabled. TON's HD
+        # implementation then derives its fixed SLIP-10 path from that normal
+        # BIP39 context; it does not introduce a TON-only mnemonic mode.
+        "enable_hd": mode == "hd",
         "dbdir": db_dir,
         "rpcport": int(rpc_port),
-        "i_am_seed": False,
+        # The isolated runtime has no bootstrap peer. Marking it a seed keeps
+        # the P2P precheck from requiring an external seed node.
+        "i_am_seed": True,
+        "is_bootstrap_node": True,
+        "myipaddr": "127.0.0.1",
         "rpcip": "127.0.0.1",
     }
     destination = Path(config_file)

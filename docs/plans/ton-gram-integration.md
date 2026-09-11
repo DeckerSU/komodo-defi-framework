@@ -431,7 +431,8 @@ fails without changing storage.
 - [ ] Add request deadlines, bounded retries/backoff, cancellation, endpoint failover
   and rate limits shared by background consumers. The initial bounded read-only pool now
   tries each configured endpoint once for transport/timeouts/429/5xx and never retries a
-  broadcast automatically; backoff, cancellation, rate limits and network identity remain.
+  broadcast automatically. Anonymous TON Center requests are serialized at one request
+  per second per endpoint; backoff, cancellation and network identity remain.
   Do not turn provider errors into zero balances. Verify selected endpoints/network using
   a supported network identity check.
 - [x] Implement immediate/task activation and balance; expose actual normalized address,
@@ -575,7 +576,7 @@ Provider-backed broadcast scenarios remain in M9's reproducible test harness.
 - [x] Reuse `TxHistoryStorage`/`TxHistoryStorageBuilder` native and WASM implementations.
   Add a small TON cursor/pending-mapping table only if existing storage cannot hold the
   necessary metadata. Do not create an unrelated database framework.
-- [ ] Namespace by network and wallet identity so Iguana, HD and future subwallets cannot
+- [x] Namespace by network and wallet identity so Iguana, HD and future subwallets cannot
   contaminate each other's history. Avoid treating formatting variants as different wallets.
 - [ ] Implement bounded initial backfill, incremental catch-up, overlap deduplication,
   persisted cursor, temporary errors, finality updates and restart recovery.
@@ -595,7 +596,7 @@ History must not be marked complete when a provider cannot supply older pages.
 
 - [x] Add TON transaction-history streaming to the existing activation path and use the coin's abortable
   spawner. The existing native SSE endpoint is `/event-stream`.
-- [ ] Publish history changes after successful persistence; reuse the existing history
+- [x] Publish history changes after successful persistence; reuse the existing history
   event streamer if its events fit, or add a focused TON implementation. Do not create
   an independent poller per subscriber or unbounded queues.
 - [ ] Support initial balance and later changes, transaction discovery/status updates,
@@ -609,9 +610,9 @@ disable and shutdown. Provider outages must not emit a false zero balance.
 
 ### M9 — Packaged runtime, curl tests and release checks
 
-- [ ] Add versioned scripts under `scripts/ton/`: `prepare-runtime.sh`, `start-kdf.sh`,
+- [x] Add versioned scripts under `scripts/ton/`: `prepare-runtime.sh`, `start-kdf.sh`,
   `test-rpc.sh`, and a small seed/config helper if shell alone would expose secrets.
-- [ ] Build release KDF and create an ignored `integration-runs/ton-gram/` directory:
+- [x] Build release KDF and create an ignored `integration-runs/ton-gram/` directory:
 
 ```text
 integration-runs/ton-gram/
@@ -627,10 +628,10 @@ integration-runs/ton-gram/
   results/                     # assertions and public tx/message references
 ```
 
-- [ ] Copy the built binary and actual modified coins file; copy script/helper dependencies.
+- [x] Copy the built binary and actual modified coins file; copy script/helper dependencies.
   Document prerequisites (`curl`, `jq`, config helper interpreter if used) and artifact
   checksums. Scripts must resolve paths relative to themselves and work outside repo CWD.
-- [ ] `start-kdf.sh hd` defaults to the private BIP39 control seed file and the standard
+- [x] `start-kdf.sh hd` defaults to the private BIP39 control seed file and the standard
   KDF HD startup config. `start-kdf.sh iguana` uses the canonical phrase through existing Iguana
   processing. Use `umask 077`, private config permissions, loopback RPC, generated RPC
   password and separate ports/DBs. Put JSON in files, not a secret-bearing argv.
@@ -638,7 +639,7 @@ integration-runs/ton-gram/
 - [ ] Configure native SSE using the existing event-stream configuration schema. Check
   startup readiness with bounded retries; trap exit/signals and shut down only the
   process started by the script. Never use global `killall kdf`.
-- [ ] Implement assertions using curl and jq, not only demonstrations that print responses.
+- [x] Implement assertions using curl and jq, not only demonstrations that print responses.
   Set connect/request/polling timeouts, propagate failures with nonzero exit status and
   redact credentials. Exit zero only when all selected tests pass; report skips distinctly.
 - [ ] Provide a default read-only suite and an explicit `--send` suite. The requested

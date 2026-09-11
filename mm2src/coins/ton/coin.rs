@@ -60,6 +60,7 @@ struct TonCoinFields {
     pending_messages: Mutex<HashSet<String>>,
     pending_messages_path: Mutex<Option<PathBuf>>,
     history_sync_state: Mutex<HistorySyncState>,
+    history_wallet_id: WalletId,
 }
 
 const TON_SWAP_UNSUPPORTED: &str = "TON atomic swaps are not supported; GRAM is wallet-only";
@@ -73,6 +74,27 @@ const HISTORY_SYNC_INTERVAL_SECONDS: f64 = 30.0;
 #[derive(Deserialize, Serialize)]
 struct PersistedPendingMessages {
     message_hashes: Vec<String>,
+}
+
+fn ton_history_wallet_id(wallet: &TonWalletContext) -> Result<WalletId, TonActivationError> {
+    // `WalletId` is used as a storage namespace. The ticker alone would merge
+    // Iguana and HD histories (and mainnet/testnet) in one database. A raw
+    // account address is canonical across friendly-address flags.
+    let protocol = wallet.protocol();
+    let network = match protocol.network {
+        super::TonNetwork::Mainnet => "mainnet",
+        super::TonNetwork::Testnet => "testnet",
+    };
+    let address = wallet
+        .address()?
+        .format(TonAddressFormat::Raw, protocol.network)
+        .replace(':', "_");
+    Ok(WalletId::new(format!(
+        "{}_ton_{}_{}",
+        wallet.ticker(),
+        network,
+        address
+    )))
 }
 
 fn unsupported_swap_transaction() -> TransactionResult {
@@ -594,6 +616,7 @@ impl TonCoin {
         key_policy: PrivKeyBuildPolicy,
     ) -> Result<Self, TonActivationError> {
         let wallet = TonWalletContext::new(config, request, key_policy)?;
+        let history_wallet_id = ton_history_wallet_id(&wallet)?;
         let required_confirmations = wallet.required_confirmations();
         let history_enabled = wallet.tx_history_enabled();
         Ok(TonCoin(Arc::new(TonCoinFields {
@@ -607,6 +630,7 @@ impl TonCoin {
             } else {
                 HistorySyncState::NotEnabled
             }),
+            history_wallet_id,
         })))
     }
 
@@ -671,7 +695,7 @@ impl TonCoin {
     }
 
     pub fn history_wallet_id(&self) -> WalletId {
-        WalletId::new(self.ticker().to_owned())
+        self.0.history_wallet_id.clone()
     }
 
     fn set_history_sync_state(&self, state: HistorySyncState) {
