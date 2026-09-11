@@ -676,6 +676,8 @@ HD v2 task activation, Iguana legacy, and Iguana v2 task activation. Each runtim
 stopped after its run. The original development history directory predates canonical
 address persistence and intentionally remains untouched; clean runtime directories
 verified the corrected `EQ…` provider address to `UQ…` KDF-address mapping.
+The HD legacy rerun also checks valid `UQ…` and raw addresses, rejects a checksum
+mutation, and converts the wallet address to raw `0:<hash>` form.
 
 Validation (2026-09-11): `cargo +1.90.0 test --offline -p coins ton:: --lib` passed
 57 tests. A Rust 1.90 release artifact was packaged from `target/ton-release/release/kdf`.
