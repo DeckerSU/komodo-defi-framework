@@ -13,6 +13,7 @@ use zeroize::Zeroizing;
 const TON_RPC_TIMEOUT: Duration = Duration::from_secs(15);
 const TONCENTER_V2_WALLET_INFORMATION: &str = "getWalletInformation";
 const TONCENTER_V2_MASTERCHAIN_INFO: &str = "getMasterchainInfo";
+const TONCENTER_V2_ESTIMATE_FEE: &str = "estimateFee";
 const TONCENTER_V2_RUN_GET_METHOD: &str = "runGetMethod";
 const TONCENTER_V2_SEND_BOC_RETURN_HASH: &str = "sendBocReturnHash";
 const MAX_BOC_BYTES: usize = 1024 * 1024;
@@ -101,6 +102,18 @@ impl TonRpcClientPool {
         Err(last_error.unwrap_or(TonRpcError::NoEndpoints))
     }
 
+    pub async fn estimate_fee(&self, request: &TonFeeEstimateRequest) -> Result<TonFeeEstimate, TonRpcError> {
+        let mut last_error = None;
+        for client in &self.clients {
+            match client.estimate_fee(request).await {
+                Ok(fee) => return Ok(fee),
+                Err(error) if error.is_retryable() => last_error = Some(error),
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_error.unwrap_or(TonRpcError::NoEndpoints))
+    }
+
     /// Submits through the configured primary endpoint exactly once.
     pub async fn send_boc_return_hash(&self, boc: &[u8]) -> Result<TonBroadcastResult, TonRpcError> {
         let client = self.clients.first().ok_or(TonRpcError::NoEndpoints)?;
@@ -170,6 +183,39 @@ impl TonRpcClient {
             .map_err(|_| TonRpcError::InvalidEndpoint)?;
         let response = self.get(url).await?;
         parse_masterchain_sequence_number(&response)
+    }
+
+    pub async fn estimate_fee(&self, request: &TonFeeEstimateRequest) -> Result<TonFeeEstimate, TonRpcError> {
+        request
+            .address
+            .ensure_network(self.network)
+            .map_err(|_| TonRpcError::AddressNetwork)?;
+        validate_boc(&request.body_boc)?;
+        match (&request.init_code_boc, &request.init_data_boc) {
+            (Some(code), Some(data)) => {
+                validate_boc(code)?;
+                validate_boc(data)?;
+            },
+            (None, None) => {},
+            _ => return Err(TonRpcError::InvalidFeeEstimateRequest),
+        }
+
+        let mut body = json::json!({
+            "address": self.format_address(&request.address)?,
+            "body": BASE64.encode(&request.body_boc),
+            "ignore_chksig": false,
+        });
+        if let (Some(code), Some(data)) = (&request.init_code_boc, &request.init_data_boc) {
+            body["init_code"] = Json::String(BASE64.encode(code));
+            body["init_data"] = Json::String(BASE64.encode(data));
+        }
+        let body = json::to_vec(&body).map_err(|_| TonRpcError::InvalidResponse)?;
+        let url = self
+            .endpoint
+            .join(TONCENTER_V2_ESTIMATE_FEE)
+            .map_err(|_| TonRpcError::InvalidEndpoint)?;
+        let response = self.post(url, body).await?;
+        parse_fee_estimate(&response)
     }
 
     fn format_address(&self, address: &TonAddress) -> Result<String, TonRpcError> {
@@ -329,6 +375,46 @@ pub struct TonWalletInformation {
     pub wallet_type: Option<String>,
 }
 
+/// The BOC components expected by TON Center's `estimateFee` endpoint.
+pub struct TonFeeEstimateRequest {
+    pub address: TonAddress,
+    pub body_boc: Vec<u8>,
+    pub init_code_boc: Option<Vec<u8>>,
+    pub init_data_boc: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TonFeeComponent {
+    pub in_forward_fee: u64,
+    pub storage_fee: u64,
+    pub gas_fee: u64,
+    pub forward_fee: u64,
+}
+
+impl TonFeeComponent {
+    pub fn total(self) -> Result<u64, TonRpcError> {
+        self.in_forward_fee
+            .checked_add(self.storage_fee)
+            .and_then(|total| total.checked_add(self.gas_fee))
+            .and_then(|total| total.checked_add(self.forward_fee))
+            .ok_or(TonRpcError::InvalidResponse)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TonFeeEstimate {
+    pub source: TonFeeComponent,
+    pub destinations: Vec<TonFeeComponent>,
+}
+
+impl TonFeeEstimate {
+    pub fn total(self) -> Result<u64, TonRpcError> {
+        self.destinations.iter().try_fold(self.source.total()?, |total, fees| {
+            total.checked_add(fees.total()?).ok_or(TonRpcError::InvalidResponse)
+        })
+    }
+}
+
 /// The provider's reference to an externally submitted message.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TonBroadcastResult {
@@ -355,6 +441,8 @@ pub enum TonRpcError {
     InvalidResponse,
     #[display(fmt = "TON BOC is empty or exceeds the maximum supported size")]
     InvalidBoc,
+    #[display(fmt = "TON fee estimation requires both init code and init data, or neither")]
+    InvalidFeeEstimateRequest,
     #[display(fmt = "TON RPC rejected the request: {_0}")]
     Remote(String),
 }
@@ -447,6 +535,29 @@ fn parse_masterchain_sequence_number(bytes: &[u8]) -> Result<u64, TonRpcError> {
     parse_u64(result.get("last").and_then(|last| last.get("seqno")))
 }
 
+fn parse_fee_component(value: &Json) -> Result<TonFeeComponent, TonRpcError> {
+    Ok(TonFeeComponent {
+        in_forward_fee: parse_u64(value.get("in_fwd_fee"))?,
+        storage_fee: parse_u64(value.get("storage_fee"))?,
+        gas_fee: parse_u64(value.get("gas_fee"))?,
+        forward_fee: parse_u64(value.get("fwd_fee"))?,
+    })
+}
+
+fn parse_fee_estimate(bytes: &[u8]) -> Result<TonFeeEstimate, TonRpcError> {
+    let response: Json = json::from_slice(bytes).map_err(|_| TonRpcError::InvalidResponse)?;
+    let result = parse_success_result(&response)?;
+    let source = parse_fee_component(result.get("source_fees").ok_or(TonRpcError::InvalidResponse)?)?;
+    let destinations = result
+        .get("destination_fees")
+        .and_then(Json::as_array)
+        .ok_or(TonRpcError::InvalidResponse)?
+        .iter()
+        .map(parse_fee_component)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(TonFeeEstimate { source, destinations })
+}
+
 fn parse_broadcast_result(bytes: &[u8]) -> Result<TonBroadcastResult, TonRpcError> {
     let response: Json = json::from_slice(bytes).map_err(|_| TonRpcError::InvalidResponse)?;
     let result = parse_success_result(&response)?;
@@ -524,6 +635,16 @@ mod tests {
             parse_masterchain_sequence_number(br#"{"ok":true,"result":{"last":{}}}"#),
             Err(TonRpcError::InvalidResponse),
         );
+    }
+
+    #[test]
+    fn parses_fee_components_without_losing_nano_precision() {
+        let estimate = parse_fee_estimate(
+            br#"{"ok":true,"result":{"source_fees":{"in_fwd_fee":"1","storage_fee":"2","gas_fee":"3","fwd_fee":"4"},"destination_fees":[{"in_fwd_fee":5,"storage_fee":6,"gas_fee":7,"fwd_fee":8}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(estimate.source.total(), Ok(10));
+        assert_eq!(estimate.total(), Ok(36));
     }
 
     #[test]

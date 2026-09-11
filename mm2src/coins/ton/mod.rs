@@ -20,7 +20,8 @@ pub use activation::{TonActivationError, TonActivationRequest, TonCoinConfig, To
 pub use address::{TonAddress, TonAddressError, TonAddressFormat, TonNetwork};
 pub use amount::{TonAmount, TonAmountError};
 pub use client::{
-    TonAccountState, TonBroadcastResult, TonRpcClient, TonRpcClientPool, TonRpcError, TonRpcNode, TonWalletInformation,
+    TonAccountState, TonBroadcastResult, TonFeeComponent, TonFeeEstimate, TonFeeEstimateRequest, TonRpcClient,
+    TonRpcClientPool, TonRpcError, TonRpcNode, TonWalletInformation,
 };
 pub use coin::TonCoin;
 pub use hd::{derive_ton_hd_seed, TonHdDerivationError, TON_MULTICHAIN_DERIVATION_PATH};
