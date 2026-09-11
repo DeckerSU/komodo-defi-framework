@@ -1,13 +1,13 @@
 use super::{TonAddress, TonAddressFormat, TonAmount, TonNetwork};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use common::{custom_futures::timeout::FutureTimerExt, executor::Timer};
+use common::{custom_futures::timeout::FutureTimerExt, executor::Timer, now_ms};
 use derive_more::Display;
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{self as json, Value as Json};
 use std::convert::TryFrom;
 use std::error::Error;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use url::Url;
 use zeroize::Zeroizing;
 
@@ -36,7 +36,10 @@ pub struct TonRpcClient {
     endpoint: Url,
     api_key: Option<Zeroizing<String>>,
     network: TonNetwork,
-    next_public_request_at: Mutex<Option<Instant>>,
+    /// Wall-clock millisecond at which the next anonymous request may start.
+    /// `common::now_ms` is available on native and wasm targets; `Instant` is
+    /// not implemented by Rust's wasm32-unknown-unknown standard library.
+    next_public_request_at: Mutex<Option<u64>>,
 }
 
 /// One TON Center-compatible endpoint supplied at activation time.
@@ -491,7 +494,7 @@ impl TonRpcClient {
         }
         let delay = {
             let mut next_request_at = self.next_public_request_at.lock();
-            reserve_public_request_slot(&mut next_request_at, Instant::now())
+            reserve_public_request_slot(&mut next_request_at, now_ms())
         };
         if !delay.is_zero() {
             Timer::sleep(delay.as_secs_f64()).await;
@@ -499,13 +502,13 @@ impl TonRpcClient {
     }
 }
 
-fn reserve_public_request_slot(next_request_at: &mut Option<Instant>, now: Instant) -> Duration {
+fn reserve_public_request_slot(next_request_at: &mut Option<u64>, now: u64) -> Duration {
     let scheduled_at = match *next_request_at {
         Some(next) if next > now => next,
         Some(_) | None => now,
     };
-    *next_request_at = scheduled_at.checked_add(PUBLIC_API_REQUEST_INTERVAL);
-    scheduled_at.saturating_duration_since(now)
+    *next_request_at = scheduled_at.checked_add(PUBLIC_API_REQUEST_INTERVAL.as_millis() as u64);
+    Duration::from_millis(scheduled_at.saturating_sub(now))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1172,13 +1175,13 @@ mod tests {
 
     #[test]
     fn reserves_non_overlapping_slots_for_anonymous_requests() {
-        let now = Instant::now();
+        let now = 1_000_u64;
         let mut next = None;
 
         assert_eq!(reserve_public_request_slot(&mut next, now), Duration::ZERO);
         assert_eq!(reserve_public_request_slot(&mut next, now), PUBLIC_API_REQUEST_INTERVAL);
         assert_eq!(
-            reserve_public_request_slot(&mut next, now + Duration::from_millis(500)),
+            reserve_public_request_slot(&mut next, now + 500),
             Duration::from_millis(1500),
         );
     }
