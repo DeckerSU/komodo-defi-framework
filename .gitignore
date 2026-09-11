@@ -59,6 +59,7 @@ scripts/mm2/seed/unparsed.txt
 
 # coins configuration file
 /coins
+/integration-runs/
 # MM2 conf to avoid occasional adding to git by someone
 MM2.json
 
