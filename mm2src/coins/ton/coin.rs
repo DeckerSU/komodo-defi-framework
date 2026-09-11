@@ -17,6 +17,10 @@ use crate::{
     WatcherOps, WeakSpawner, WithdrawError, WithdrawFut, WithdrawRequest,
 };
 use async_trait::async_trait;
+use base64::{
+    engine::general_purpose::{STANDARD as BASE64, URL_SAFE_NO_PAD},
+    Engine as _,
+};
 use common::{
     executor::{abortable_queue::AbortableQueue, AbortableSystem, AbortedError},
     now_sec,
@@ -26,8 +30,10 @@ use futures01::Future;
 use keys::KeyPair;
 use mm2_err_handle::prelude::*;
 use mm2_number::{BigDecimal, MmNumber};
+use parking_lot::Mutex;
 use rpc::v1::types::Bytes as BytesJson;
 use rpc::v1::types::H264 as H264Json;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -44,11 +50,13 @@ struct TonCoinFields {
     wallet: TonWalletContext,
     abortable_system: AbortableQueue,
     required_confirmations: AtomicU64,
+    pending_messages: Mutex<HashSet<String>>,
 }
 
 const TON_SWAP_UNSUPPORTED: &str = "TON atomic swaps are not supported; GRAM is wallet-only";
 const DEFAULT_TRANSFER_EXPIRATION_SECONDS: u64 = 60;
 const MAX_TRANSFER_EXPIRATION_SECONDS: u64 = 3_600;
+const MAX_PENDING_MESSAGES: usize = 32;
 
 fn unsupported_swap_transaction() -> TransactionResult {
     Err(TransactionErr::ProtocolNotSupported(TON_SWAP_UNSUPPORTED.to_owned()))
@@ -213,11 +221,23 @@ impl MarketCoinOps for TonCoin {
         Box::new(
             async move {
                 validate_external_boc(&boc)?;
-                coin.0
-                    .wallet
-                    .broadcast_boc(&boc)
-                    .await
-                    .map_err(|error| error.to_string())
+                let message_hash = external_message_hash(&boc)?;
+                coin.register_pending_message(&message_hash)?;
+                match coin.0.wallet.broadcast_boc(&boc).await {
+                    Ok(reference) => Ok(reference),
+                    Err(error) => {
+                        // A timeout or transport failure can occur after the
+                        // provider accepted the BOC, so retain this entry for
+                        // later reconciliation and never sign a replacement.
+                        if !matches!(
+                            error,
+                            TonActivationError::Rpc(super::TonRpcError::Timeout | super::TonRpcError::Transport)
+                        ) {
+                            coin.remove_pending_message(&message_hash);
+                        }
+                        Err(error.to_string())
+                    },
+                }
             }
             .boxed()
             .compat(),
@@ -402,6 +422,7 @@ impl TonCoin {
             wallet,
             abortable_system: AbortableQueue::default(),
             required_confirmations: AtomicU64::new(required_confirmations),
+            pending_messages: Mutex::new(HashSet::new()),
         })))
     }
 
@@ -446,6 +467,38 @@ impl TonCoin {
         limit: u8,
     ) -> Result<Vec<super::TonAccountTransaction>, TonActivationError> {
         self.0.wallet.account_transactions(limit).await
+    }
+
+    fn register_pending_message(&self, message_hash: &str) -> Result<(), String> {
+        let mut pending = self.0.pending_messages.lock();
+        if pending.contains(message_hash) {
+            return Err("TON external message is already pending reconciliation".to_owned());
+        }
+        if pending.len() >= MAX_PENDING_MESSAGES {
+            return Err("TON pending-message limit reached; reconcile existing broadcasts first".to_owned());
+        }
+        pending.insert(message_hash.to_owned());
+        Ok(())
+    }
+
+    fn remove_pending_message(&self, message_hash: &str) {
+        self.0.pending_messages.lock().remove(message_hash);
+    }
+
+    /// Removes locally pending external messages once their exact inbound
+    /// message hash appears in the account's newest transactions. This is
+    /// inclusion reconciliation only: it does not claim recipient execution
+    /// or masterchain confirmation.
+    pub async fn reconcile_pending_messages(&self) -> Result<usize, TonActivationError> {
+        let transactions = self.0.wallet.account_transactions(MAX_PENDING_MESSAGES as u8).await?;
+        let observed: Vec<_> = transactions
+            .iter()
+            .filter_map(|transaction| transaction.inbound_message_hash.as_deref())
+            .collect();
+        let mut pending = self.0.pending_messages.lock();
+        let before = pending.len();
+        pending.retain(|pending_hash| !observed.iter().any(|hash| ton_hashes_equal(pending_hash, hash)));
+        Ok(before - pending.len())
     }
 
     async fn build_withdraw(&self, req: WithdrawRequest) -> Result<TransactionDetails, MmError<WithdrawError>> {
@@ -653,6 +706,28 @@ fn validate_external_boc(boc: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+fn external_message_hash(boc: &[u8]) -> Result<String, String> {
+    use tonlib_core::tlb_types::{block::message::Message, tlb::TLB};
+
+    Message::from_boc(boc)
+        .and_then(|message| message.cell_hash())
+        .map(|hash| hash.to_hex())
+        .map_err(|_| "Invalid TON external-message BOC".to_owned())
+}
+
+fn ton_hashes_equal(left: &str, right: &str) -> bool {
+    if left == right {
+        return true;
+    }
+    let decode = |value: &str| {
+        hex::decode(value)
+            .ok()
+            .or_else(|| BASE64.decode(value).ok())
+            .or_else(|| URL_SAFE_NO_PAD.decode(value).ok())
+    };
+    matches!((decode(left), decode(right)), (Some(left), Some(right)) if left == right)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -709,6 +784,7 @@ mod tests {
         .unwrap();
 
         assert!(validate_external_boc(&transfer.boc).is_ok());
+        assert_eq!(external_message_hash(&transfer.boc).unwrap(), transfer.message_hash);
         assert!(validate_external_boc(&[0, 1, 2]).is_err());
     }
 
@@ -737,5 +813,13 @@ mod tests {
         assert!(transfer_expire_at(Some(1)).is_ok());
         assert!(transfer_expire_at(Some(0)).is_err());
         assert!(transfer_expire_at(Some(MAX_TRANSFER_EXPIRATION_SECONDS + 1)).is_err());
+    }
+
+    #[test]
+    fn compares_provider_and_local_message_hash_encodings() {
+        let raw = [0xabu8; 32];
+        assert!(ton_hashes_equal(&hex::encode(raw), &BASE64.encode(raw)));
+        assert!(ton_hashes_equal(&hex::encode(raw), &URL_SAFE_NO_PAD.encode(raw)));
+        assert!(!ton_hashes_equal(&hex::encode(raw), &hex::encode([0xcdu8; 32])));
     }
 }
