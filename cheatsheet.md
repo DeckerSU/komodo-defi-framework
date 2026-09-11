@@ -1,95 +1,164 @@
-# GRAM (TON) KDF cheat sheet
+# GRAM (TON) with a KDF binary
 
-This sheet describes the native GRAM/TON integration on branch
-`feat/ton-gram-integration`.  Examples use mainnet TON Center v2 and the packaged
-runtime on `netid` 6133. They contain no wallet mnemonic, private key, API key, or
-RPC password.
+This document is a self-contained terminal workflow for the KDF binary on the
+`feat/ton-gram-integration` branch. It needs only the binary, `curl`, `jq`, a private
+KDF configuration, and the GRAM-enabled **coins repository**. It does not depend on
+the repository's test runtime, its scripts, or any local control seed.
 
-## Build and prepare an isolated runtime
+GRAM is a mainnet, wallet-only TON coin with nine decimal places. KDF uses a TON W5R1
+wallet in workchain 0, subwallet 0.
 
-KDF currently builds with Rust **1.90.0**. Build the binary, then package it together
-with the GRAM-aware `coins` checkout and the runtime scripts:
+## 1. Get the required coins data
 
-```sh
-cd /media/decker/data2tb/kdf-telegram/komodo-defi-framework-gram
-cargo +1.90.0 build --release --offline -p mm2_bin_lib --bin kdf --target-dir target/ton-release
-KDF_TON_BINARY="$PWD/target/ton-release/release/kdf" ./scripts/ton/prepare-runtime.sh
+Use the `coins` repository branch `feat/ton-gram-integration`, at revision
+`91f539e92351c22028ad5a7e3998a20497a84c17` or a descendant that retains the GRAM
+entry. The required layout is:
+
+```text
+$COINS_ROOT/coins
+$COINS_ROOT/ton/GRAM
 ```
 
-The package is created at `../integration-runs/ton-gram`. It has a copied KDF binary,
-`coins` data containing GRAM, generated private runtime configuration, and launch and
-test scripts. Re-run `prepare-runtime.sh` after changing KDF source or `../coins`.
-
-Set the provider before activating the coin. A public TON Center endpoint is usable
-without a key, but KDF deliberately limits anonymous requests to one per second. An
-API key removes that local limiter and is never written to the generated configuration.
+`$COINS_ROOT/coins` must contain the `GRAM` entry whose protocol is `TON`; the
+`ton/GRAM` file supplies the default Toncenter v2 provider configuration. Point
+`MM_COINS_PATH` at the first file, not the directory:
 
 ```sh
-export KDF_TON_RPC_NODE='https://toncenter.com/api/v2'
-export KDF_TON_API_KEY='...' # optional; keep outside Git and shell history where possible
+export COINS_ROOT=/absolute/path/to/coins
+test -f "$COINS_ROOT/coins"
+test -f "$COINS_ROOT/ton/GRAM"
 ```
 
-## Start KDF and choose a wallet mode
+The `coins` JSON array must contain this exact native-coin entry:
 
-```sh
-cd /media/decker/data2tb/kdf-telegram/integration-runs/ton-gram
-./start-kdf.sh hd
-# or
-./start-kdf.sh iguana
-```
-
-`start-kdf.sh` runs in the foreground. It creates a mode-specific database and listens
-on port `17783` by default. Override `KDF_PORT`, `KDF_RUNTIME`, or
-`KDF_TON_SEED_FILE` when required. The HD seed file must contain a normal KDF BIP39
-mnemonic; do not place the phrase in this document, a command line, logs, or Git.
-
-The two modes intentionally use different key sources:
-
-| Mode | TON key source | Address policy |
-| --- | --- | --- |
-| `iguana` | KDF's existing 32-byte Iguana private-key material, interpreted as an Ed25519 seed | One deterministic TON wallet address |
-| `hd` | KDF BIP39 seed, SLIP-10 path `m/44'/607'/0'`, then the TON W5R1 wallet key | One deterministic TON wallet address |
-
-HD account/address creation and scanning are intentionally unavailable for GRAM. A
-request for another HD address returns an error instead of deriving or mutating state.
-
-## Common RPC setup
-
-In a second terminal, set values for the KDF instance you started. `rpc` accepts a JSON
-request on standard input and prints the reply.
-
-```sh
-export KDF_RUNTIME=/media/decker/data2tb/kdf-telegram/integration-runs/ton-gram
-export KDF_PORT=17783
-export KDF_RPC="http://127.0.0.1:$KDF_PORT"
-export KDF_USERPASS="$(jq -r '.rpc_password' "$KDF_RUNTIME/config/hd.json")"
-
-rpc() {
-  curl --fail-with-body --silent --show-error \
-    -H 'Content-Type: application/json' \
-    --data-binary @- "$KDF_RPC"
+```json
+{
+  "coin": "GRAM",
+  "name": "gram",
+  "fname": "GRAM (TON)",
+  "mm2": 1,
+  "wallet_only": true,
+  "decimals": 9,
+  "avg_blocktime": 5,
+  "required_confirmations": 1,
+  "protocol": {
+    "type": "TON",
+    "protocol_data": {
+      "network": "Mainnet",
+      "wallet_version": "V5R1",
+      "workchain": 0,
+      "subwallet_number": 0
+    }
+  }
 }
 ```
 
-For Iguana mode, use `config/iguana.json` in the `KDF_USERPASS` command. The following
-examples use a public destination placeholder; replace it with a checked mainnet GRAM
-address before sending value:
+The adjacent `$COINS_ROOT/ton/GRAM` provider file can contain the public default:
 
-```sh
-export DESTINATION='UQ...'
+```json
+{
+  "rpc_nodes": [
+    { "url": "https://toncenter.com/api/v2" }
+  ]
+}
 ```
 
-Build the provider-node array once for the activation calls:
+## 2. Create a private KDF configuration
+
+Make an empty working directory and create `MM2.json` with mode `0600`. The following
+commands request the KDF BIP39 phrase and RPC password interactively, so neither enters
+shell history. The RPC password must include at least one special character, such as
+`!`.
 
 ```sh
-export KDF_TON_RPC_NODE="${KDF_TON_RPC_NODE:-https://toncenter.com/api/v2}"
-NODES="$(jq -cn --arg url "$KDF_TON_RPC_NODE" --arg key "${KDF_TON_API_KEY:-}" \
-  'if $key == "" then [{url: $url}] else [{url: $url, api_key: $key}] end')"
+export KDF_HOME="$HOME/kdf-gram"
+mkdir -p "$KDF_HOME/db"
+chmod 700 "$KDF_HOME" "$KDF_HOME/db"
+
+read -r -s -p 'KDF BIP39 phrase: ' KDF_PASSPHRASE; printf '\n'
+read -r -s -p 'KDF RPC password: ' KDF_RPC_PASSWORD; printf '\n'
+jq -n \
+  --arg passphrase "$KDF_PASSPHRASE" \
+  --arg rpc_password "$KDF_RPC_PASSWORD" \
+  --arg dbdir "$KDF_HOME/db" \
+  '{
+    gui: "nogui",
+    netid: 6133,
+    rpc_password: $rpc_password,
+    passphrase: $passphrase,
+    enable_hd: true,
+    dbdir: $dbdir,
+    rpcport: 17783,
+    rpcip: "127.0.0.1",
+    myipaddr: "127.0.0.1",
+    i_am_seed: true,
+    is_bootstrap_node: true,
+    event_streaming_configuration: {
+      access_control_allow_origin: "http://127.0.0.1"
+    }
+  }' >"$KDF_HOME/MM2.json"
+unset KDF_PASSPHRASE KDF_RPC_PASSWORD
+chmod 600 "$KDF_HOME/MM2.json"
 ```
 
-## Activate GRAM
+This configuration starts **HD mode**. Its KDF BIP39 seed is derived with SLIP-10 path
+`m/44'/607'/0'`, then used for the TON wallet. It does not require, or enable, a native
+TON mnemonic mode.
 
-Legacy (v1) activation returns when the coin is ready:
+For **Iguana mode**, use the same configuration structure but set `enable_hd` to
+`false`, choose a separate `dbdir` and `rpcport` (for example `17784`), and start a
+separate process. TON then interprets KDF's existing 32-byte Iguana private-key
+material as an Ed25519 seed. The resulting address is deterministic, but differs from
+the HD address.
+
+GRAM currently supports exactly one address in either mode. HD account/address creation
+and address scanning intentionally return an error.
+
+## 3. Start KDF
+
+Set `KDF_BIN` to the already built binary and run it with the config and coins data:
+
+```sh
+export KDF_BIN=/absolute/path/to/kdf
+export MM_CONF_PATH="$KDF_HOME/MM2.json"
+export MM_COINS_PATH="$COINS_ROOT/coins"
+export MM_LOG="$KDF_HOME/kdf.log"
+"$KDF_BIN"
+```
+
+KDF stays in the foreground. Keep it running and use a second terminal for RPC calls.
+Stop it with `Ctrl-C` when finished.
+
+## 4. Define the RPC helper and TON provider
+
+In the second terminal, use the password from `MM2.json` and the configured port:
+
+```sh
+export KDF_RPC=http://127.0.0.1:17783
+export KDF_USERPASS="$(jq -r '.rpc_password' "$KDF_HOME/MM2.json")"
+export KDF_TON_RPC_NODE=https://toncenter.com/api/v2
+export KDF_TON_API_KEY='' # optional
+
+rpc() {
+  curl --fail-with-body --silent --show-error \
+    --connect-timeout 10 --max-time 90 \
+    -H 'Content-Type: application/json' --data-binary @- "$KDF_RPC"
+}
+
+NODES="$(jq -cn --arg url "$KDF_TON_RPC_NODE" --arg api_key "$KDF_TON_API_KEY" \
+  'if $api_key == "" then [{url: $url}] else [{url: $url, api_key: $api_key}] end')"
+```
+
+The public Toncenter endpoint works without an API key. KDF deliberately limits
+anonymous provider requests to one per second. Set `KDF_TON_API_KEY` to use a provider
+key; do not put it in `MM2.json`, the coins repository, or a command committed to Git.
+
+## 5. Activate GRAM
+
+Choose one activation form. Both activate the same local coin; do not invoke both in
+the same KDF process.
+
+### Legacy v1 activation
 
 ```sh
 rpc <<JSON
@@ -103,8 +172,9 @@ rpc <<JSON
 JSON
 ```
 
-The v2 endpoint starts an activation task. Save the returned `result.task_id`, then
-poll its status until it is `Ok` or an error:
+The successful response contains the wallet `address` and `balance`.
+
+### v2 task activation
 
 ```sh
 rpc <<JSON
@@ -118,8 +188,12 @@ rpc <<JSON
   }
 }
 JSON
+```
 
-export TASK_ID=1 # replace with result.task_id from the preceding reply
+Save `result.task_id` from the reply and poll it until `result.status` is `Ok`:
+
+```sh
+export TASK_ID=REPLACE_WITH_RESULT_TASK_ID
 rpc <<JSON
 {
   "mmrpc": "2.0",
@@ -130,24 +204,29 @@ rpc <<JSON
 JSON
 ```
 
-The legacy and v2 activation forms enable the same local GRAM coin. Do not activate it
-twice in one KDF process.
+## 6. Address, balance, and transaction history
 
-## Address, balance, and history
+Set a recipient or another address to inspect:
 
-Validate an address or convert its friendly representation to raw `workchain:hash`:
+```sh
+export ADDRESS='UQ...'
+```
+
+Validate a mainnet friendly or raw TON address and convert a friendly address to its
+raw `workchain:hash` form:
 
 ```sh
 rpc <<JSON
-{"userpass":"$KDF_USERPASS","method":"validateaddress","coin":"GRAM","address":"$DESTINATION"}
+{"userpass":"$KDF_USERPASS","method":"validateaddress","coin":"GRAM","address":"$ADDRESS"}
 JSON
 
 rpc <<JSON
-{"userpass":"$KDF_USERPASS","method":"convertaddress","coin":"GRAM","from":"$DESTINATION","to":"Raw"}
+{"userpass":"$KDF_USERPASS","method":"convertaddress","coin":"GRAM","from":"$ADDRESS","to_address_format":"Raw"}
 JSON
 ```
 
-The current balance RPC is the legacy route, and it works after either activation form:
+The currently exposed balance endpoint is the v1 route and works after either v1 or v2
+activation:
 
 ```sh
 rpc <<JSON
@@ -155,38 +234,40 @@ rpc <<JSON
 JSON
 ```
 
-Read local transaction history through either envelope. History is synchronized after
-activation when `tx_history` is true and is stored in KDF's mode-specific database.
+Read synchronized local history through either API. `tx_history: true` at activation
+starts the KDF history worker.
 
 ```sh
-# Legacy v1
+# v1
 rpc <<JSON
 {"userpass":"$KDF_USERPASS","method":"my_tx_history","coin":"GRAM","limit":50}
 JSON
 
-# v2, HD wallet (the only supported HD account is 0)
+# v2: HD mode; account 0 is the only supported account.
 rpc <<JSON
 {
   "mmrpc":"2.0", "userpass":"$KDF_USERPASS", "method":"my_tx_history",
-  "params":{"coin":"GRAM","target":{"type":"account_id","account_id":0},"limit":50}
+  "params":{"coin":"GRAM","limit":50,"target":{"type":"account_id","account_id":0}}
 }
 JSON
 
-# v2, Iguana wallet
+# v2: Iguana mode.
 rpc <<JSON
 {
   "mmrpc":"2.0", "userpass":"$KDF_USERPASS", "method":"my_tx_history",
-  "params":{"coin":"GRAM","target":{"type":"iguana"},"limit":50}
+  "params":{"coin":"GRAM","limit":50,"target":{"type":"iguana"}}
 }
 JSON
 ```
 
-## Create and broadcast a transfer
+## 7. Create, inspect, and broadcast a transfer
 
-First generate an unsigned signed-message BOC. `broadcast: false` makes this safe for
-inspection; it does not send funds. Amounts accept up to nine GRAM decimal places.
+Set a validated destination. Amounts use decimal GRAM and accept at most nine decimal
+places. This first request only creates a locally signed TON BOC; `broadcast: false`
+does not send funds.
 
 ```sh
+export DESTINATION='UQ...'
 rpc <<JSON
 {
   "userpass":"$KDF_USERPASS",
@@ -200,23 +281,23 @@ rpc <<JSON
 JSON
 ```
 
-Copy `tx_hex` from the result only after checking the destination and amount. Broadcast
-the exact BOC once using the legacy raw-transaction RPC:
+Review the returned `from`, `to`, `total_amount`, and `fee_details`. Save the returned
+`tx_hex` exactly as received, then broadcast it **once**:
 
 ```sh
-export TX_HEX='...' # result.tx_hex from the preceding response
+export TX_HEX='REPLACE_WITH_WITHDRAW_RESULT_tx_hex'
 rpc <<JSON
 {"userpass":"$KDF_USERPASS","method":"send_raw_transaction","coin":"GRAM","tx_hex":"$TX_HEX"}
 JSON
 ```
 
-`send_raw_transaction` returns the external-message identifier reported by the
-provider. It is not final proof of execution and is not necessarily the account
-transaction hash. Check `my_tx_history` and the recipient balance after inclusion.
-Do not regenerate or rebroadcast after an ambiguous network error until history has
-been reconciled, because a newly built TON message may create another payment.
+`send_raw_transaction` returns an external-message ID in `tx_hash`. It means the
+provider accepted the BOC; it is not necessarily the final account transaction hash.
+Poll `my_tx_history` and check the recipient before creating another transfer after an
+ambiguous error. Rebuilding and sending a new BOC can create a second payment.
 
-The common v2 withdrawal task is also available and broadcasts as part of the task:
+The common v2 withdrawal task is also available. It sends as part of the task rather
+than returning an offline BOC:
 
 ```sh
 rpc <<JSON
@@ -226,7 +307,7 @@ rpc <<JSON
 }
 JSON
 
-export WITHDRAW_TASK_ID=1 # replace with result.task_id
+export WITHDRAW_TASK_ID=REPLACE_WITH_RESULT_TASK_ID
 rpc <<JSON
 {
   "mmrpc":"2.0", "userpass":"$KDF_USERPASS", "method":"task::withdraw::status",
@@ -235,16 +316,15 @@ rpc <<JSON
 JSON
 ```
 
-## Stream balances and transaction-history events
+## 8. Stream balance and history events
 
-Open the event stream before enabling a producer:
+Open the server-sent-event endpoint in one terminal before enabling streamers:
 
 ```sh
 curl --no-buffer --silent --show-error "$KDF_RPC/event-stream?id=1"
 ```
 
-In another terminal, enable balance and history streamers. The method names include
-the `stream::` prefix.
+Enable the producers in another terminal. The `stream::` prefix is required:
 
 ```sh
 rpc <<JSON
@@ -256,8 +336,7 @@ rpc <<JSON
 JSON
 ```
 
-Disable them by their returned streamer ID. The known IDs are `BALANCE:GRAM` and
-`TX_HISTORY:GRAM`:
+Disable them when no longer needed:
 
 ```sh
 rpc <<JSON
@@ -269,39 +348,12 @@ rpc <<JSON
 JSON
 ```
 
-## Reproducible runtime checks
+## 9. Expected errors
 
-`test-rpc.sh` activates GRAM, checks address handling, balance, v1/v2 history, and
-both stream subscriptions. It defaults to a non-spending unsigned-transfer check.
-
-```sh
-cd /media/decker/data2tb/kdf-telegram/integration-runs/ton-gram
-./test-rpc.sh hd '' legacy
-./test-rpc.sh hd '' v2
-./test-rpc.sh iguana '' legacy
-./test-rpc.sh iguana '' v2
-```
-
-The following opt-in command sends `0.001` GRAM plus network fees. Use a funded,
-disposable wallet and a destination you control:
-
-```sh
-./test-rpc.sh hd --send legacy
-```
-
-Stop foreground KDF with `Ctrl-C`. If it was started in the background by a local
-automation, send `SIGINT` only to that recorded process ID:
-
-```sh
-kill -INT "$(cat "$KDF_RUNTIME/hd.pid")"
-```
-
-## Useful failures
-
-| Symptom | Meaning and action |
+| Reply or behavior | Action |
 | --- | --- |
-| TON Center returns 429 or requests appear slow | No API key is in use; KDF caps anonymous requests at one per second. Set `KDF_TON_API_KEY` or wait and retry read operations. |
-| `GRAM` is already enabled | Reuse the enabled coin, or restart KDF for another activation test. |
-| New HD address/account/scan request fails | Expected current GRAM policy: only HD account 0 and its single address are supported. |
-| Broadcast reply is ambiguous | Query history and provider state before attempting any new transfer. |
-| Balance is zero after an activation | Check the selected mode, the enabled wallet address, mainnet node URL, and that the account is funded in GRAM rather than another TON asset. |
+| Toncenter returns `429`, or reads are slow | KDF is using the anonymous one-request-per-second limit. Wait before retrying, or configure `KDF_TON_API_KEY`. |
+| `GRAM` is already enabled | Reuse the coin in that KDF process. Restart KDF only when a fresh activation is intended. |
+| New HD account/address/scan fails | Expected for GRAM: only HD account 0 and one wallet address are implemented. |
+| Broadcast result is uncertain | Query KDF history and provider state before making any new transfer. |
+| The balance is zero | Verify the enabled address, wallet mode, mainnet provider URL, and that the account holds native GRAM. |
