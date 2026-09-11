@@ -762,6 +762,10 @@ Do not label an unavailable environment or unrun feature gate as a passed check.
 
 ## 6. Completion criteria and implementation report
 
+The root-level `cheatsheet.md` records the packaged runtime workflow and the
+currently implemented GRAM v1/v2 activation, balance, history, transfer, broadcast,
+and event-stream RPCs without embedding a credential or mnemonic.
+
 - [ ] No production code path depends on the funded reference address or seed file.
 - [ ] HD BIP39/SLIP-10 vector matches; Iguana has its own repeatable address; both key modes work.
 - [ ] Unsupported extra addresses/accounts/scanning fail explicitly with no mutations.
