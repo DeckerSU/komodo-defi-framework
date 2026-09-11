@@ -1,6 +1,26 @@
 use chrono::Utc;
 use regex::Regex;
-use std::{env, process::Command};
+use std::{env, path::PathBuf, process::Command};
+
+fn repository_dir() -> PathBuf {
+    PathBuf::from("../..")
+        .canonicalize()
+        .expect("KDF repository root must exist")
+}
+
+fn git_output(args: &[&str]) -> Result<String, String> {
+    let output = Command::new("git")
+        .current_dir(repository_dir())
+        .args(args)
+        .output()
+        .map_err(|error| format!("Failed to run git command: {error}"))?;
+    if !output.status.success() {
+        return Err("Git command failed".to_owned());
+    }
+    String::from_utf8(output.stdout)
+        .map(|output| output.trim().to_owned())
+        .map_err(|error| format!("Invalid UTF-8 sequence: {error}"))
+}
 
 fn crate_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -11,16 +31,8 @@ fn version_tag() -> Result<String, String> {
         return Ok(tag);
     }
 
-    let output = Command::new("git")
-        .current_dir("../../")
-        .args(["log", "--pretty=format:%h", "-n1"])
-        .output()
-        .map_err(|e| format!("Failed to run git command: {e}\nSet `KDF_BUILD_TAG` manually instead.",))?;
-
-    let commit_hash = String::from_utf8(output.stdout)
-        .map_err(|e| format!("Invalid UTF-8 sequence: {e}"))?
-        .trim()
-        .to_string();
+    let commit_hash = git_output(&["log", "--pretty=format:%h", "-n1"])
+        .map_err(|error| format!("{error}\nSet `KDF_BUILD_TAG` manually instead."))?;
 
     if !Regex::new(r"^\w+$")
         .expect("Failed to compile regex")
@@ -49,7 +61,18 @@ fn set_build_variables() -> Result<(), String> {
 fn main() {
     println!("cargo:rerun-if-env-changed=CARGO_PKG_VERSION");
     println!("cargo:rerun-if-env-changed=KDF_BUILD_TAG");
-    println!("cargo::rerun-if-changed=../../.git/HEAD");
+    let repository_dir = repository_dir();
+    if let Ok(head) = git_output(&["rev-parse", "--git-path", "HEAD"]) {
+        println!("cargo:rerun-if-changed={}", repository_dir.join(head).display());
+    }
+    if let Ok(branch_ref) = git_output(&["symbolic-ref", "--quiet", "HEAD"]) {
+        if let Ok(branch_path) = git_output(&["rev-parse", "--git-path", &branch_ref]) {
+            println!("cargo:rerun-if-changed={}", repository_dir.join(branch_path).display());
+        }
+    }
+    if let Ok(packed_refs) = git_output(&["rev-parse", "--git-path", "packed-refs"]) {
+        println!("cargo:rerun-if-changed={}", repository_dir.join(packed_refs).display());
+    }
 
     set_build_variables().expect("Failed to set build variables");
 }
