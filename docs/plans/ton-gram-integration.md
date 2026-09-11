@@ -369,7 +369,9 @@ public-fixture development can continue but funded acceptance remains blocked.
 - [x] Implement Iguana raw-seed and BIP39/SLIP-10 HD W5 construction and the private
   future-subwallet helper. Make public keys distinct from contract addresses.
 - [ ] Implement required coin/swap trait errors without `todo!`, `unimplemented!` or
-  hidden panics. Gate trading even if `wallet_only` is omitted from input config.
+  hidden panics. `TonCoin` now owns the validated TON wallet identity as a separate
+  type; implement its mandatory traits and gate trading even if `wallet_only` is
+  omitted from input config.
 
 Tests: reference vectors, CRC corruption, tags, network/workchain changes, wallet-ID
 changes, invalid mnemonic redaction, max integer/decimal bounds, BOC round trips and
