@@ -1,6 +1,7 @@
 # TON / GRAM wallet integration plan
 
-Status: implementation in progress; M0 and the TON primitive/key-derivation groundwork are complete.
+Status: implementation in progress; M0–M4 are substantially complete, and M5 now has
+native BOC construction, exact fee estimation and legacy withdrawal/broadcast support.
 Date: 2026-09-10.
 Implementation branch: `feat/ton-gram-integration`, created from local `dev` at
 `e686ef3500585f01c9f0e89c8c01bc036c42253c`.
@@ -364,7 +365,7 @@ public-fixture development can continue but funded acceptance remains blocked.
   implementation, where the final fee response shape is known.
 - [x] Encode nano amounts with bounded checked integer arithmetic; no floats, overflow,
   negative/zero send amounts, or fractional precision beyond 9 decimals.
-- [ ] Preserve friendly address flags separately from the raw workchain/account hash.
+- [x] Preserve friendly address flags separately from the raw workchain/account hash.
   Support raw and valid standard/URL-safe friendly forms; validate CRC, tags and length.
   Reject testnet-only destination tags on mainnet; raw addresses use an explicit network
   context and a documented bounce default.
@@ -374,11 +375,11 @@ public-fixture development can continue but funded acceptance remains blocked.
   hidden panics. `TonCoin` owns the validated TON wallet identity and implements
   `MarketCoinOps`, `WatcherOps`, and `MmCoin`. It exposes the W5 address and native
   balance, advertises itself as wallet-only regardless of request data, and makes all
-  unsupported raw-BOC, confirmation, history, HTLC, key-export, arbitrary-message,
-  withdraw, and trading operations return explicit errors. The legacy infallible
+  unsupported confirmation, history, HTLC, key-export, arbitrary-message, and trading
+  operations return explicit errors. The legacy infallible
   HTLC-key hooks return compatibility zero values but are unreachable because
-  `MmCoin::wallet_only` is enforced. Actual withdrawal, history, and confirmation
-  tracking remain later milestones.
+  `MmCoin::wallet_only` is enforced. Native withdrawal and raw-BOC broadcast are
+  implemented in M5/M6; history and confirmation tracking remain later milestones.
 
 Tests: reference vectors, CRC corruption, tags, network/workchain changes, wallet-ID
 changes, invalid mnemonic redaction, max integer/decimal bounds, BOC round trips and
@@ -433,7 +434,7 @@ fails without changing storage.
   broadcast automatically; backoff, cancellation, rate limits and network identity remain.
   Do not turn provider errors into zero balances. Verify selected endpoints/network using
   a supported network identity check.
-- [ ] Implement immediate/task activation and balance; expose actual normalized address,
+- [x] Implement immediate/task activation and balance; expose actual normalized address,
   network, wallet version, key mode and supported capabilities. The legacy v1 `enable`
   path now accepts exactly one explicit `nodes` or `rpc_nodes` array, validates the
   native GRAM configuration and KDF key policy, fetches wallet information before
@@ -503,22 +504,24 @@ scripts read it for activation. Record both repository revisions in the test man
 
 ### M5 — Build, sign and estimate withdrawals
 
-- [ ] Implement internal native transfer and optional bounded UTF-8 comment payload;
-  respect destination bounce semantics and reject unsupported payload/fee selectors.
-- [ ] Fetch fresh sender state, balance and seqno. Include initial W5 StateInit only
-  for a deployable account; verify it hashes to the sender address.
-- [ ] Build/sign W5 external messages with explicit wallet ID, send mode and checked
-  expiration. Reuse `WithdrawRequest.expiration_seconds` with documented bounds.
-- [ ] Estimate the actual message through Toncenter `estimateFee`; pass the API's expected
+- [x] Implement an internal native transfer, respect destination bounce semantics, and
+  reject comments and manual fee selectors until a bounded UTF-8 comment encoding is added.
+- [x] Fetch fresh sender state, balance and seqno. Include initial W5 StateInit only
+  for a deployable account.
+- [x] Build/sign W5 external messages with explicit wallet ID and checked expiration.
+  `WithdrawRequest.expiration_seconds` defaults to 60 seconds and is bounded to 1–3600.
+- [x] Estimate the actual message through Toncenter `estimateFee`; pass the API's expected
   body/init code/data rather than confusing it with the complete broadcast BOC.
   Capture storage, compute, action/forwarding costs without double-counting, and expose
   which values are estimates. Model first-wallet deployment and recipient cases.
-- [ ] Verify message/signature sizes and destination before returning `TransactionDetails`.
-- [ ] Implement `max` using a bounded convergence algorithm with conservative reserve
+- [x] Validate a returned BOC as an external-in TON message before broadcast. Full
+  signature verification and all cell-depth/reference limits remain M6 hardening work.
+- [x] Implement `max` using a bounded convergence algorithm with conservative reserve
   semantics tied to estimated fees. Detect nonconvergence and insufficient balance.
   Never implement max-send by blindly using a wallet-destroying send mode.
-- [ ] Preserve common `withdraw` and task behavior; return signed BOC hex and TON metadata
-  (seqno, expiration, message identifier and fee currency GRAM), without broadcasting.
+- [ ] Wire the common task `withdraw` lifecycle and add explicit TON metadata (seqno and
+  expiration) to the response. Legacy `withdraw` already returns a signed BOC hex,
+  message identifier, GRAM fee breakdown, and does not broadcast.
 
 Tests: signature verification with a public fixture; decode every message field; first
 send vs deployed wallet; memo length/Unicode; expiration bounds/overflow; incorrect key;
@@ -531,8 +534,9 @@ fixtures and verify the deployed provider's compatibility with W5. [Estimate fee
 
 ### M6 — Broadcast, replay handling and confirmations
 
-- [ ] Add shared legacy/v2 `send_raw_transaction` implementation; bound and decode BOC,
-  validate supported message shape and broadcast the identical signed bytes.
+- [x] Add shared coin-level `send_raw_transaction` implementation; decode hex BOC,
+  validate external-in message shape and broadcast the identical bytes through the primary
+  endpoint exactly once. v2-specific route coverage and stricter BOC limits remain.
 - [ ] Track in-flight messages by wallet/seqno/message identity with bounded state.
   Parallel withdrawal builds can target the same current seqno; document that they are
   alternatives, not a guarantee of multiple executable transactions. Reject conflicting

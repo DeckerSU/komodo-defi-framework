@@ -1,6 +1,6 @@
 use super::{
-    TonActivationError, TonActivationRequest, TonAddress, TonAddressFormat, TonCoinConfig, TonWalletContext,
-    TonWalletInformation, TON_DECIMALS,
+    TonActivationError, TonActivationRequest, TonAddress, TonAddressFormat, TonAmount, TonCoinConfig, TonTxFeeDetails,
+    TonWalletContext, TonWalletInformation, TON_DECIMALS,
 };
 use crate::coin_errors::{AddressFromPubkeyError, MyAddressError};
 use crate::coin_errors::{ValidatePaymentError, ValidatePaymentResult};
@@ -11,13 +11,16 @@ use crate::{
     HistorySyncState, MarketCoinOps, MmCoin, NegotiateSwapContractAddrErr, PrivKeyBuildPolicy, RawTransactionError,
     RawTransactionFut, RawTransactionRequest, RefundPaymentArgs, SearchForSwapTxSpendInput, SendPaymentArgs,
     SignatureError, SignatureResult, SpendPaymentArgs, SwapOps, TradeFee, TradePreimageError, TradePreimageFut,
-    TradePreimageResult, TradePreimageValue, TransactionErr, TransactionResult, TxMarshalingErr,
-    UnexpectedDerivationMethod, ValidateAddressResult, ValidateFeeArgs, ValidateOtherPubKeyErr, ValidatePaymentInput,
-    VerificationError, VerificationResult, WaitForHTLCTxSpendArgs, WatcherOps, WeakSpawner, WithdrawError, WithdrawFut,
-    WithdrawRequest,
+    TradePreimageResult, TradePreimageValue, TransactionData, TransactionDetails, TransactionErr, TransactionResult,
+    TransactionType, TxFeeDetails, TxMarshalingErr, UnexpectedDerivationMethod, ValidateAddressResult, ValidateFeeArgs,
+    ValidateOtherPubKeyErr, ValidatePaymentInput, VerificationError, VerificationResult, WaitForHTLCTxSpendArgs,
+    WatcherOps, WeakSpawner, WithdrawError, WithdrawFut, WithdrawRequest,
 };
 use async_trait::async_trait;
-use common::executor::{abortable_queue::AbortableQueue, AbortableSystem, AbortedError};
+use common::{
+    executor::{abortable_queue::AbortableQueue, AbortableSystem, AbortedError},
+    now_sec,
+};
 use futures::{FutureExt, TryFutureExt};
 use futures01::Future;
 use keys::KeyPair;
@@ -44,6 +47,8 @@ struct TonCoinFields {
 }
 
 const TON_SWAP_UNSUPPORTED: &str = "TON atomic swaps are not supported; GRAM is wallet-only";
+const DEFAULT_TRANSFER_EXPIRATION_SECONDS: u64 = 60;
+const MAX_TRANSFER_EXPIRATION_SECONDS: u64 = 3_600;
 
 fn unsupported_swap_transaction() -> TransactionResult {
     Err(TransactionErr::ProtocolNotSupported(TON_SWAP_UNSUPPORTED.to_owned()))
@@ -193,16 +198,30 @@ impl MarketCoinOps for TonCoin {
         self.ticker()
     }
 
-    fn send_raw_tx(&self, _tx: &str) -> Box<dyn Future<Item = String, Error = String> + Send> {
-        Box::new(futures01::future::err(
-            "TON raw BOC broadcast validation is not implemented".to_owned(),
-        ))
+    fn send_raw_tx(&self, tx: &str) -> Box<dyn Future<Item = String, Error = String> + Send> {
+        let tx = tx.strip_prefix("0x").unwrap_or(tx);
+        let boc = match hex::decode(tx) {
+            Ok(boc) => boc,
+            Err(error) => return Box::new(futures01::future::err(format!("Invalid TON BOC hex: {error}"))),
+        };
+        self.send_raw_tx_bytes(&boc)
     }
 
-    fn send_raw_tx_bytes(&self, _tx: &[u8]) -> Box<dyn Future<Item = String, Error = String> + Send> {
-        Box::new(futures01::future::err(
-            "TON raw BOC broadcast validation is not implemented".to_owned(),
-        ))
+    fn send_raw_tx_bytes(&self, tx: &[u8]) -> Box<dyn Future<Item = String, Error = String> + Send> {
+        let coin = self.clone();
+        let boc = tx.to_vec();
+        Box::new(
+            async move {
+                validate_external_boc(&boc)?;
+                coin.0
+                    .wallet
+                    .broadcast_boc(&boc)
+                    .await
+                    .map_err(|error| error.to_string())
+            }
+            .boxed()
+            .compat(),
+        )
     }
 
     fn wait_for_confirmations(&self, _input: ConfirmPaymentInput) -> Box<dyn Future<Item = (), Error = String> + Send> {
@@ -269,10 +288,9 @@ impl MmCoin for TonCoin {
     fn spawner(&self) -> WeakSpawner {
         self.0.abortable_system.weak_spawner()
     }
-    fn withdraw(&self, _req: WithdrawRequest) -> WithdrawFut {
-        Box::new(futures01::future::err(MmError::new(WithdrawError::UnsupportedError(
-            "TON withdrawal requires fee estimation and is not implemented".to_owned(),
-        ))))
+    fn withdraw(&self, req: WithdrawRequest) -> WithdrawFut {
+        let coin = self.clone();
+        Box::new(async move { coin.build_withdraw(req).await }.boxed().compat())
     }
     fn get_raw_transaction(&self, _req: RawTransactionRequest) -> RawTransactionFut<'_> {
         Box::new(futures01::future::err(MmError::new(
@@ -422,12 +440,219 @@ impl TonCoin {
     pub async fn current_block_number(&self) -> Result<u64, TonActivationError> {
         self.0.wallet.current_block().await
     }
+
+    async fn build_withdraw(&self, req: WithdrawRequest) -> Result<TransactionDetails, MmError<WithdrawError>> {
+        ensure_default_sender(req.from.as_ref())?;
+        if req.fee.is_some() {
+            return MmError::err(WithdrawError::InvalidFeePolicy(
+                "manual TON fees are not supported; omit the fee field".to_owned(),
+            ));
+        }
+        if req.memo.is_some() {
+            return MmError::err(WithdrawError::InvalidMemo(
+                "TON transfer comments are not implemented".to_owned(),
+            ));
+        }
+        if req.broadcast {
+            return MmError::err(WithdrawError::UnsupportedError(
+                "TON withdraw returns a signed BOC; submit it with send_raw_transaction".to_owned(),
+            ));
+        }
+
+        let recipient = TonAddress::parse(&req.to).map_err(|error| WithdrawError::InvalidAddress(error.to_string()))?;
+        recipient
+            .ensure_network(self.0.wallet.protocol().network)
+            .map_err(|error| WithdrawError::InvalidAddress(error.to_string()))?;
+        let expire_at = transfer_expire_at(req.expiration_seconds)?;
+        let prepared = if req.max {
+            self.prepare_max_transfer(recipient.clone(), expire_at).await?
+        } else {
+            let amount = req
+                .amount
+                .to_string()
+                .parse::<TonAmount>()
+                .map_err(|error| WithdrawError::InvalidFee {
+                    reason: format!("invalid GRAM amount: {error}"),
+                    details: None,
+                })?;
+            if amount == TonAmount::ZERO {
+                return MmError::err(WithdrawError::AmountTooLow {
+                    amount: req.amount,
+                    threshold: self.min_tx_amount(),
+                });
+            }
+            self.0
+                .wallet
+                .prepare_transfer(recipient.clone(), amount, expire_at)
+                .await
+                .map_err(ton_withdraw_error)?
+        };
+
+        let source_fee = prepared.fee.source_total().map_err(ton_rpc_withdraw_error)?;
+        let required = prepared
+            .amount
+            .checked_add(TonAmount::from_nano(source_fee))
+            .map_err(|error| WithdrawError::InternalError(error.to_string()))?;
+        if prepared.available_balance < required {
+            return MmError::err(WithdrawError::NotSufficientBalance {
+                coin: self.ticker().to_owned(),
+                available: big_decimal_from_sat_unsigned(prepared.available_balance.as_nano(), TON_DECIMALS),
+                required: big_decimal_from_sat_unsigned(required.as_nano(), TON_DECIMALS),
+            });
+        }
+
+        let my_address = self
+            .my_address()
+            .map_err(|error| WithdrawError::InternalError(error.to_string()))?;
+        let recipient_address = recipient.format(
+            TonAddressFormat::Friendly {
+                bounceable: false,
+                urlsafe: true,
+            },
+            self.0.wallet.protocol().network,
+        );
+        let amount_decimal = big_decimal_from_sat_unsigned(prepared.amount.as_nano(), TON_DECIMALS);
+        let fee_details =
+            TonTxFeeDetails::from_estimate(self.ticker().to_owned(), &prepared.fee).map_err(ton_rpc_withdraw_error)?;
+        let total_fee = fee_details.total_fee.clone();
+        let received_by_me = if recipient_address == my_address {
+            amount_decimal.clone()
+        } else {
+            0.into()
+        };
+        let spent_by_me = &amount_decimal + &total_fee;
+
+        Ok(TransactionDetails {
+            tx: TransactionData::new_signed(BytesJson(prepared.signed.boc), prepared.signed.message_hash.clone()),
+            from: vec![my_address],
+            to: vec![recipient_address],
+            total_amount: amount_decimal,
+            spent_by_me: spent_by_me.clone(),
+            received_by_me: received_by_me.clone(),
+            my_balance_change: received_by_me - spent_by_me,
+            block_height: 0,
+            timestamp: now_sec(),
+            fee_details: Some(TxFeeDetails::Ton(fee_details)),
+            coin: req.coin,
+            internal_id: BytesJson(prepared.signed.message_hash.into_bytes()),
+            kmd_rewards: None,
+            transaction_type: TransactionType::StandardTransfer,
+            memo: None,
+        })
+    }
+
+    async fn prepare_max_transfer(
+        &self,
+        recipient: TonAddress,
+        expire_at: u32,
+    ) -> Result<super::TonPreparedTransfer, MmError<WithdrawError>> {
+        let information = self.0.wallet.wallet_information().await.map_err(ton_withdraw_error)?;
+        if information.balance == TonAmount::ZERO {
+            return MmError::err(WithdrawError::ZeroBalanceToWithdrawMax);
+        }
+
+        let mut prepared = self
+            .0
+            .wallet
+            .prepare_transfer(recipient.clone(), information.balance, expire_at)
+            .await
+            .map_err(ton_withdraw_error)?;
+        for _ in 0..3 {
+            let source_fee = prepared.fee.source_total().map_err(ton_rpc_withdraw_error)?;
+            let amount = prepared
+                .available_balance
+                .checked_sub(TonAmount::from_nano(source_fee))
+                .map_err(|_| {
+                    MmError::new(WithdrawError::AmountTooLow {
+                        amount: 0.into(),
+                        threshold: big_decimal_from_sat_unsigned(source_fee, TON_DECIMALS),
+                    })
+                })?;
+            if amount == TonAmount::ZERO {
+                return MmError::err(WithdrawError::AmountTooLow {
+                    amount: 0.into(),
+                    threshold: big_decimal_from_sat_unsigned(source_fee, TON_DECIMALS),
+                });
+            }
+            let next = self
+                .0
+                .wallet
+                .prepare_transfer(recipient.clone(), amount, expire_at)
+                .await
+                .map_err(ton_withdraw_error)?;
+            let next_fee = next.fee.source_total().map_err(ton_rpc_withdraw_error)?;
+            if next.available_balance == prepared.available_balance && next_fee == source_fee {
+                return Ok(next);
+            }
+            prepared = next;
+        }
+        MmError::err(WithdrawError::InvalidFee {
+            reason: "TON max-withdraw fee estimate did not converge".to_owned(),
+            details: None,
+        })
+    }
+}
+
+fn ensure_default_sender(sender: Option<&HDAddressSelector>) -> Result<(), MmError<WithdrawError>> {
+    match sender {
+        None => Ok(()),
+        Some(HDAddressSelector::AddressId(path))
+            if path.account_id == 0 && path.address_id == 0 && path.chain == crypto::Bip44Chain::External =>
+        {
+            Ok(())
+        },
+        Some(_) => MmError::err(WithdrawError::UnexpectedFromAddress(
+            "GRAM supports only its fixed primary TON address".to_owned(),
+        )),
+    }
+}
+
+fn transfer_expire_at(expiration_seconds: Option<u64>) -> Result<u32, MmError<WithdrawError>> {
+    let expiration_seconds = expiration_seconds.unwrap_or(DEFAULT_TRANSFER_EXPIRATION_SECONDS);
+    if expiration_seconds == 0 || expiration_seconds > MAX_TRANSFER_EXPIRATION_SECONDS {
+        return MmError::err(WithdrawError::InvalidFee {
+            reason: format!("TON expiration_seconds must be between 1 and {MAX_TRANSFER_EXPIRATION_SECONDS} seconds"),
+            details: None,
+        });
+    }
+    now_sec()
+        .checked_add(expiration_seconds)
+        .and_then(|timestamp| (timestamp <= u64::from(u32::MAX)).then_some(timestamp as u32))
+        .ok_or_else(|| {
+            MmError::new(WithdrawError::InternalError(
+                "TON transfer expiration cannot be represented".to_owned(),
+            ))
+        })
+}
+
+fn ton_withdraw_error(error: TonActivationError) -> MmError<WithdrawError> {
+    MmError::new(WithdrawError::Transport(error.to_string()))
+}
+
+fn ton_rpc_withdraw_error(error: super::TonRpcError) -> MmError<WithdrawError> {
+    MmError::new(WithdrawError::Transport(error.to_string()))
+}
+
+fn validate_external_boc(boc: &[u8]) -> Result<(), String> {
+    use tonlib_core::tlb_types::{
+        block::message::{CommonMsgInfo, Message},
+        tlb::TLB,
+    };
+
+    let message = Message::from_boc(boc).map_err(|_| "Invalid TON external-message BOC".to_owned())?;
+    if !matches!(message.info, CommonMsgInfo::ExtIn(_)) {
+        return Err("TON raw BOC must contain an external incoming message".to_owned());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{IguanaPrivKey, PrivKeyBuildPolicy};
+    use crate::{
+        ton::{build_signed_transfer, TonNetwork, TonTransferRequest, TonWalletParams},
+        IguanaPrivKey, PrivKeyBuildPolicy,
+    };
     use serde_json::json;
 
     fn config() -> TonCoinConfig {
@@ -457,5 +682,53 @@ mod tests {
         assert_eq!(coin.required_confirmations(), 1);
         assert!(!coin.tx_history_enabled());
         assert!(coin.address().is_ok());
+    }
+
+    #[test]
+    fn accepts_only_a_signed_external_message_boc_for_broadcast() {
+        let wallet = TonWalletParams::MAINNET_DEFAULT.wallet_from_seed(&[0x42; 32]).unwrap();
+        let transfer = build_signed_transfer(
+            &wallet,
+            TonNetwork::Mainnet,
+            &TonTransferRequest {
+                recipient: TonAddress::parse("UQBYGTsWwxh00p3Fq_EdwzQ2uRzuptfxP5crEOsfRT6zDOS4").unwrap(),
+                amount: "0.001".parse().unwrap(),
+                bounceable: false,
+                sequence_number: 0,
+                expire_at: 1_700_000_000,
+                deploy_wallet: true,
+            },
+        )
+        .unwrap();
+
+        assert!(validate_external_boc(&transfer.boc).is_ok());
+        assert!(validate_external_boc(&[0, 1, 2]).is_err());
+    }
+
+    #[test]
+    fn accepts_only_the_fixed_primary_address_selector() {
+        use crate::hd_wallet::HDPathAccountToAddressId;
+        use crypto::Bip44Chain;
+
+        assert!(ensure_default_sender(None).is_ok());
+        assert!(
+            ensure_default_sender(Some(&HDAddressSelector::AddressId(HDPathAccountToAddressId::default()))).is_ok()
+        );
+        assert!(
+            ensure_default_sender(Some(&HDAddressSelector::AddressId(HDPathAccountToAddressId {
+                account_id: 0,
+                chain: Bip44Chain::External,
+                address_id: 1,
+            })))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn bounds_transfer_expiration() {
+        assert!(transfer_expire_at(None).is_ok());
+        assert!(transfer_expire_at(Some(1)).is_ok());
+        assert!(transfer_expire_at(Some(0)).is_err());
+        assert!(transfer_expire_at(Some(MAX_TRANSFER_EXPIRATION_SECONDS + 1)).is_err());
     }
 }

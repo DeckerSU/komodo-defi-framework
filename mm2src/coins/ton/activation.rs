@@ -1,6 +1,7 @@
 use super::{
-    TonAccountStateError, TonAddress, TonKeyPolicyError, TonProtocolInfo, TonRpcClientPool, TonRpcError, TonRpcNode,
-    TonSigningSeed, TonWalletError, TonWalletInformation,
+    build_fee_estimate_request, build_signed_transfer, TonAccountStateError, TonAddress, TonAmount, TonFeeEstimate,
+    TonKeyPolicyError, TonProtocolInfo, TonRpcClientPool, TonRpcError, TonRpcNode, TonSignedTransfer, TonSigningSeed,
+    TonTransferError, TonTransferRequest, TonWalletError, TonWalletInformation,
 };
 use crate::PrivKeyBuildPolicy;
 use derive_more::Display;
@@ -110,6 +111,15 @@ pub struct TonWalletContext {
     tx_history: bool,
 }
 
+/// A freshly signed transfer together with the state used to authorize it.
+/// No private key material is retained in this value.
+pub struct TonPreparedTransfer {
+    pub signed: TonSignedTransfer,
+    pub fee: TonFeeEstimate,
+    pub available_balance: TonAmount,
+    pub amount: TonAmount,
+}
+
 impl TonWalletContext {
     pub fn new(
         config: TonCoinConfig,
@@ -175,17 +185,79 @@ impl TonWalletContext {
         self.rpc.current_block().await.map_err(TonActivationError::Rpc)
     }
 
+    /// Broadcasts a previously signed external BOC exactly once through the
+    /// primary endpoint. A transport timeout has an unknown chain outcome and
+    /// is deliberately not retried.
+    pub async fn broadcast_boc(&self, boc: &[u8]) -> Result<String, TonActivationError> {
+        self.rpc
+            .send_boc_return_hash(boc)
+            .await
+            .map(|result| result.message_hash)
+            .map_err(TonActivationError::Rpc)
+    }
+
     /// Checks the account state before a coin is registered. An uninitialized
     /// account is valid: its first W5 transfer will deploy the wallet contract.
     pub async fn validate_account_state(&self) -> Result<TonWalletInformation, TonActivationError> {
         let information = self.wallet_information().await?;
-        information.transfer_state().map_err(TonActivationError::AccountState)?;
+        self.validate_wallet_information(&information)?;
+        Ok(information)
+    }
+
+    /// Reads fresh state, signs an exact W5 transfer and obtains its simulated
+    /// source fee. This does not broadcast or mutate local state.
+    ///
+    /// The TON wallet object is intentionally confined to this method because
+    /// the upstream library keeps a signing key inside it.
+    pub async fn prepare_transfer(
+        &self,
+        recipient: TonAddress,
+        amount: TonAmount,
+        expire_at: u32,
+    ) -> Result<TonPreparedTransfer, TonActivationError> {
+        let information = self.wallet_information().await?;
+        let state = self.validate_wallet_information(&information)?;
+        let wallet = self
+            .signing_seed
+            .wallet(self.config.protocol.wallet_params())
+            .map_err(TonActivationError::WalletConstruction)?;
+        let request = TonTransferRequest {
+            bounceable: recipient.is_bounceable().unwrap_or(false),
+            recipient,
+            amount,
+            sequence_number: state.sequence_number(),
+            expire_at,
+            deploy_wallet: state.deploy_wallet(),
+        };
+        let fee_request = build_fee_estimate_request(&wallet, self.config.protocol.network, &request)
+            .map_err(TonActivationError::Transfer)?;
+        let signed = build_signed_transfer(&wallet, self.config.protocol.network, &request)
+            .map_err(TonActivationError::Transfer)?;
+        let fee = self
+            .rpc
+            .estimate_fee(&fee_request)
+            .await
+            .map_err(TonActivationError::Rpc)?;
+
+        Ok(TonPreparedTransfer {
+            signed,
+            fee,
+            available_balance: information.balance,
+            amount,
+        })
+    }
+
+    fn validate_wallet_information(
+        &self,
+        information: &TonWalletInformation,
+    ) -> Result<super::TonTransferState, TonActivationError> {
+        let state = information.transfer_state().map_err(TonActivationError::AccountState)?;
         if information.account_state == super::TonAccountState::Active
             && !is_w5r1_wallet_type(information.wallet_type.as_deref())
         {
             return Err(TonActivationError::IncompatibleActiveWallet);
         }
-        Ok(information)
+        Ok(state)
     }
 }
 
@@ -227,6 +299,8 @@ pub enum TonActivationError {
     AccountState(TonAccountStateError),
     #[display(fmt = "Active TON account is not a compatible W5R1 wallet")]
     IncompatibleActiveWallet,
+    #[display(fmt = "Unable to construct TON transfer: {_0}")]
+    Transfer(TonTransferError),
 }
 
 impl Error for TonActivationError {}

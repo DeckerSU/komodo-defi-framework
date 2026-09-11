@@ -9,6 +9,7 @@ mod address;
 mod amount;
 mod client;
 mod coin;
+mod fee;
 mod hd;
 mod key;
 mod protocol;
@@ -16,7 +17,7 @@ mod state;
 mod transaction;
 mod wallet;
 
-pub use activation::{TonActivationError, TonActivationRequest, TonCoinConfig, TonWalletContext};
+pub use activation::{TonActivationError, TonActivationRequest, TonCoinConfig, TonPreparedTransfer, TonWalletContext};
 pub use address::{TonAddress, TonAddressError, TonAddressFormat, TonNetwork};
 pub use amount::{TonAmount, TonAmountError};
 pub use client::{
@@ -24,6 +25,7 @@ pub use client::{
     TonRpcClientPool, TonRpcError, TonRpcNode, TonWalletInformation,
 };
 pub use coin::TonCoin;
+pub use fee::{TonFeeComponentDetails, TonTxFeeDetails};
 pub use hd::{derive_ton_hd_seed, TonHdDerivationError, TON_MULTICHAIN_DERIVATION_PATH};
 pub use key::{TonKeyPolicyError, TonSigningSeed};
 pub use protocol::{TonProtocolInfo, TonWalletVersion};

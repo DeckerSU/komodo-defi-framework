@@ -408,7 +408,15 @@ pub struct TonFeeEstimate {
 }
 
 impl TonFeeEstimate {
-    pub fn total(self) -> Result<u64, TonRpcError> {
+    /// Fees charged to the sender's wallet transaction.
+    pub fn source_total(&self) -> Result<u64, TonRpcError> {
+        self.source.total()
+    }
+
+    /// Sum of the source and destination transaction fees reported by the
+    /// simulation. This is diagnostic data; a native transfer only debits the
+    /// sender by `source_total`.
+    pub fn total(&self) -> Result<u64, TonRpcError> {
         self.destinations.iter().try_fold(self.source.total()?, |total, fees| {
             total.checked_add(fees.total()?).ok_or(TonRpcError::InvalidResponse)
         })

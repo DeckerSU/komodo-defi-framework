@@ -41,6 +41,13 @@ impl TonSigningSeed {
     pub fn address(&self, wallet_params: TonWalletParams) -> Result<TonAddress, TonWalletError> {
         wallet_params.address_from_seed(self.as_bytes())
     }
+
+    pub(crate) fn wallet(
+        &self,
+        wallet_params: TonWalletParams,
+    ) -> Result<tonlib_core::wallet::ton_wallet::TonWallet, TonWalletError> {
+        wallet_params.wallet_from_seed(self.as_bytes())
+    }
 }
 
 #[derive(Debug, Display, Eq, PartialEq)]

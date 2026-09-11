@@ -9,6 +9,7 @@ use crate::qrc20::Qrc20FeeDetails;
 use crate::siacoin::SiaFeeDetails;
 use crate::solana::SolanaFeeDetails;
 use crate::tendermint::TendermintFeeDetails;
+use crate::ton::TonTxFeeDetails;
 use crate::utxo::UtxoFeeDetails;
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -23,6 +24,7 @@ pub enum TxFeeDetails {
     Tendermint(TendermintFeeDetails),
     Sia(SiaFeeDetails),
     Solana(SolanaFeeDetails),
+    Ton(TonTxFeeDetails),
 }
 
 /// Deserialize the TxFeeDetails as an untagged enum.
@@ -42,6 +44,7 @@ impl<'de> Deserialize<'de> for TxFeeDetails {
             Tendermint(TendermintFeeDetails),
             Sia(SiaFeeDetails),
             Solana(SolanaFeeDetails),
+            Ton(TonTxFeeDetails),
         }
 
         match Deserialize::deserialize(deserializer)? {
@@ -53,6 +56,7 @@ impl<'de> Deserialize<'de> for TxFeeDetails {
             TxFeeDetailsUnTagged::Tendermint(f) => Ok(TxFeeDetails::Tendermint(f)),
             TxFeeDetailsUnTagged::Sia(f) => Ok(TxFeeDetails::Sia(f)),
             TxFeeDetailsUnTagged::Solana(f) => Ok(TxFeeDetails::Solana(f)),
+            TxFeeDetailsUnTagged::Ton(f) => Ok(TxFeeDetails::Ton(f)),
         }
     }
 }
@@ -66,6 +70,12 @@ impl From<EthTxFeeDetails> for TxFeeDetails {
 impl From<TronTxFeeDetails> for TxFeeDetails {
     fn from(tron_details: TronTxFeeDetails) -> Self {
         TxFeeDetails::Tron(tron_details)
+    }
+}
+
+impl From<TonTxFeeDetails> for TxFeeDetails {
+    fn from(ton_details: TonTxFeeDetails) -> Self {
+        TxFeeDetails::Ton(ton_details)
     }
 }
 
