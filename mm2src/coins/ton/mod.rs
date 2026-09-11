@@ -22,7 +22,7 @@ pub use address::{TonAddress, TonAddressError, TonAddressFormat, TonNetwork};
 pub use amount::{TonAmount, TonAmountError};
 pub use client::{
     TonAccountState, TonAccountTransaction, TonBroadcastResult, TonFeeComponent, TonFeeEstimate, TonFeeEstimateRequest,
-    TonRpcClient, TonRpcClientPool, TonRpcError, TonRpcNode, TonWalletInformation,
+    TonRpcClient, TonRpcClientPool, TonRpcError, TonRpcNode, TonTransactionCursor, TonWalletInformation,
 };
 pub use coin::TonCoin;
 pub use fee::{TonFeeComponentDetails, TonTxFeeDetails};

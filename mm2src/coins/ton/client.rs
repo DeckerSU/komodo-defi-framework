@@ -18,6 +18,7 @@ const TONCENTER_V2_GET_TRANSACTIONS: &str = "getTransactions";
 const TONCENTER_V2_RUN_GET_METHOD: &str = "runGetMethod";
 const TONCENTER_V2_SEND_BOC_RETURN_HASH: &str = "sendBocReturnHash";
 const MAX_BOC_BYTES: usize = 1024 * 1024;
+const MAX_TRANSACTION_PAGE_SIZE: u8 = 100;
 #[cfg(target_arch = "wasm32")]
 const TON_API_KEY_HEADER: &str = "X-API-Key";
 
@@ -120,9 +121,18 @@ impl TonRpcClientPool {
         address: &TonAddress,
         limit: u8,
     ) -> Result<Vec<TonAccountTransaction>, TonRpcError> {
+        self.account_transactions_page(address, limit, None).await
+    }
+
+    pub async fn account_transactions_page(
+        &self,
+        address: &TonAddress,
+        limit: u8,
+        cursor: Option<&TonTransactionCursor>,
+    ) -> Result<Vec<TonAccountTransaction>, TonRpcError> {
         let mut last_error = None;
         for client in &self.clients {
-            match client.account_transactions(address, limit).await {
+            match client.account_transactions_page(address, limit, cursor).await {
                 Ok(transactions) => return Ok(transactions),
                 Err(error) if error.is_retryable() => last_error = Some(error),
                 Err(error) => return Err(error),
@@ -243,16 +253,32 @@ impl TonRpcClient {
         address: &TonAddress,
         limit: u8,
     ) -> Result<Vec<TonAccountTransaction>, TonRpcError> {
-        if limit == 0 {
+        self.account_transactions_page(address, limit, None).await
+    }
+
+    pub async fn account_transactions_page(
+        &self,
+        address: &TonAddress,
+        limit: u8,
+        cursor: Option<&TonTransactionCursor>,
+    ) -> Result<Vec<TonAccountTransaction>, TonRpcError> {
+        if limit == 0 || limit > MAX_TRANSACTION_PAGE_SIZE {
             return Err(TonRpcError::InvalidTransactionQuery);
         }
         let mut url = self
             .endpoint
             .join(TONCENTER_V2_GET_TRANSACTIONS)
             .map_err(|_| TonRpcError::InvalidEndpoint)?;
-        url.query_pairs_mut()
+        let mut query = url.query_pairs_mut();
+        query
             .append_pair("address", &self.format_address(address)?)
             .append_pair("limit", &limit.to_string());
+        if let Some(cursor) = cursor {
+            query
+                .append_pair("lt", &cursor.logical_time)
+                .append_pair("hash", &cursor.hash);
+        }
+        drop(query);
         let response = self.get(url).await?;
         parse_account_transactions(&response)
     }
@@ -426,6 +452,24 @@ pub struct TonAccountTransaction {
     pub outbound_message_hashes: Vec<String>,
 }
 
+/// The cursor required by TON Center v2 account pagination. The provider
+/// requires logical time and transaction hash together, so this type has no
+/// partially initialized state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TonTransactionCursor {
+    pub logical_time: String,
+    pub hash: String,
+}
+
+impl TonAccountTransaction {
+    pub fn cursor(&self) -> TonTransactionCursor {
+        TonTransactionCursor {
+            logical_time: self.logical_time.clone(),
+            hash: self.hash.clone(),
+        }
+    }
+}
+
 /// The BOC components expected by TON Center's `estimateFee` endpoint.
 pub struct TonFeeEstimateRequest {
     pub address: TonAddress,
@@ -502,7 +546,7 @@ pub enum TonRpcError {
     InvalidBoc,
     #[display(fmt = "TON fee estimation requires both init code and init data, or neither")]
     InvalidFeeEstimateRequest,
-    #[display(fmt = "TON transaction query limit must be greater than zero")]
+    #[display(fmt = "TON transaction query limit must be between 1 and 100")]
     InvalidTransactionQuery,
     #[display(fmt = "TON RPC rejected the request: {_0}")]
     Remote(String),
@@ -720,6 +764,13 @@ mod tests {
         assert_eq!(transactions[0].fee, TonAmount::from_nano(42));
         assert_eq!(transactions[0].inbound_message_hash.as_deref(), Some("inbound-hash"));
         assert_eq!(transactions[0].outbound_message_hashes, ["outbound-hash"]);
+        assert_eq!(
+            transactions[0].cursor(),
+            TonTransactionCursor {
+                logical_time: "123".to_owned(),
+                hash: "transaction-hash".to_owned(),
+            }
+        );
     }
 
     #[test]
