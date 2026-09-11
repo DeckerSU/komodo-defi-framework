@@ -10,6 +10,7 @@ use zeroize::Zeroizing;
 
 const TON_RPC_TIMEOUT: Duration = Duration::from_secs(15);
 const TONCENTER_V2_WALLET_INFORMATION: &str = "getWalletInformation";
+const TONCENTER_V2_RUN_GET_METHOD: &str = "runGetMethod";
 #[cfg(target_arch = "wasm32")]
 const TON_API_KEY_HEADER: &str = "X-API-Key";
 
@@ -50,26 +51,59 @@ impl TonRpcClient {
     /// Queries balance, account state and seqno without inventing a seqno for an
     /// already active account. Callers must explicitly handle `None` before signing.
     pub async fn wallet_information(&self, address: &TonAddress) -> Result<TonWalletInformation, TonRpcError> {
-        address
-            .ensure_network(self.network)
-            .map_err(|_| TonRpcError::AddressNetwork)?;
+        let address = self.format_address(address)?;
         let mut url = self
             .endpoint
             .join(TONCENTER_V2_WALLET_INFORMATION)
             .map_err(|_| TonRpcError::InvalidEndpoint)?;
-        url.query_pairs_mut().append_pair(
-            "address",
-            &address.format(
-                TonAddressFormat::Friendly {
-                    bounceable: false,
-                    urlsafe: true,
-                },
-                self.network,
-            ),
-        );
+        url.query_pairs_mut().append_pair("address", &address);
 
         let response = self.get(url).await?;
         parse_wallet_information(&response)
+    }
+
+    /// Returns wallet information with a sequence number for an active wallet.
+    ///
+    /// Some TON Center-compatible providers omit `seqno` from
+    /// `getWalletInformation`. Only in that case this makes a separate read-only
+    /// `runGetMethod(seqno)` request. An inactive account remains without a seqno.
+    pub async fn wallet_information_with_seqno(
+        &self,
+        address: &TonAddress,
+    ) -> Result<TonWalletInformation, TonRpcError> {
+        let mut information = self.wallet_information(address).await?;
+        if information.account_state == TonAccountState::Active && information.sequence_number.is_none() {
+            information.sequence_number = Some(self.get_method_seqno(address).await?);
+        }
+        Ok(information)
+    }
+
+    fn format_address(&self, address: &TonAddress) -> Result<String, TonRpcError> {
+        address
+            .ensure_network(self.network)
+            .map_err(|_| TonRpcError::AddressNetwork)?;
+        Ok(address.format(
+            TonAddressFormat::Friendly {
+                bounceable: false,
+                urlsafe: true,
+            },
+            self.network,
+        ))
+    }
+
+    async fn get_method_seqno(&self, address: &TonAddress) -> Result<u32, TonRpcError> {
+        let address = self.format_address(address)?;
+        let mut url = self
+            .endpoint
+            .join(TONCENTER_V2_RUN_GET_METHOD)
+            .map_err(|_| TonRpcError::InvalidEndpoint)?;
+        url.query_pairs_mut()
+            .append_pair("address", &address)
+            .append_pair("method", "seqno")
+            .append_pair("stack", "[]");
+
+        let response = self.get(url).await?;
+        parse_get_method_seqno(&response)
     }
 
     async fn get(&self, url: Url) -> Result<Vec<u8>, TonRpcError> {
@@ -210,6 +244,27 @@ fn parse_u32(value: &Json) -> Result<u32, TonRpcError> {
     u32::try_from(parse_u64(Some(value))?).map_err(|_| TonRpcError::InvalidResponse)
 }
 
+fn parse_get_method_seqno(bytes: &[u8]) -> Result<u32, TonRpcError> {
+    let response: Json = json::from_slice(bytes).map_err(|_| TonRpcError::InvalidResponse)?;
+    let result = parse_success_result(&response)?;
+    if result.get("exit_code").and_then(Json::as_i64) != Some(0) {
+        return Err(TonRpcError::InvalidResponse);
+    }
+
+    let value = result
+        .get("stack")
+        .and_then(Json::as_array)
+        .and_then(|stack| stack.first())
+        .and_then(Json::as_array)
+        .filter(|entry| entry.len() == 2 && entry.first().and_then(Json::as_str) == Some("num"))
+        .and_then(|entry| entry.get(1))
+        .and_then(Json::as_str)
+        .and_then(|value| value.strip_prefix("0x"))
+        .and_then(|value| u32::from_str_radix(value, 16).ok())
+        .ok_or(TonRpcError::InvalidResponse)?;
+    Ok(value)
+}
+
 fn limit_error_message(message: &str) -> String {
     message.chars().take(256).collect()
 }
@@ -236,6 +291,26 @@ mod tests {
         let info = parse_wallet_information(br#"{"ok":true,"result":{"balance":0,"account_state":"active"}}"#).unwrap();
 
         assert_eq!(info.sequence_number, None);
+    }
+
+    #[test]
+    fn parses_seqno_from_a_successful_get_method_response() {
+        assert_eq!(
+            parse_get_method_seqno(br#"{"ok":true,"result":{"exit_code":0,"stack":[["num","0x2a"]]}}"#),
+            Ok(42),
+        );
+    }
+
+    #[test]
+    fn rejects_missing_or_failed_get_method_seqno() {
+        assert_eq!(
+            parse_get_method_seqno(br#"{"ok":true,"result":{"exit_code":11,"stack":[["num","0x2a"]]}}"#),
+            Err(TonRpcError::InvalidResponse),
+        );
+        assert_eq!(
+            parse_get_method_seqno(br#"{"ok":true,"result":{"exit_code":0,"stack":[["num","42"]]}}"#),
+            Err(TonRpcError::InvalidResponse),
+        );
     }
 
     #[test]

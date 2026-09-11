@@ -403,8 +403,10 @@ fails without changing storage.
   `X-API-Key`, and applies a request deadline on native and WASM transports.
 - [x] Add typed `getWalletInformation` parsing for balance, account state, wallet type
   and optional seqno. Never coerce an absent active-account seqno to zero.
-- [ ] Add a get-method seqno fallback, masterchain head, fee, broadcast and history calls
-  as their consuming milestones land.
+- [x] Add a strict `runGetMethod(seqno)` fallback for an active wallet when
+  `getWalletInformation` omits `seqno`; it validates a successful numeric stack result
+  and never turns a missing value into zero. Masterchain-head, fee, broadcast and
+  history calls remain for their consuming milestones.
 - [ ] Distinguish nonexist/uninitialized, active, frozen and unknown states. Only the
   first two imply fresh StateInit; active accounts need compatible W5 state and seqno.
 - [ ] Add request deadlines, bounded retries/backoff, cancellation, endpoint failover
