@@ -269,16 +269,17 @@ impl TonRpcClient {
             .endpoint
             .join(TONCENTER_V2_GET_TRANSACTIONS)
             .map_err(|_| TonRpcError::InvalidEndpoint)?;
-        let mut query = url.query_pairs_mut();
-        query
-            .append_pair("address", &self.format_address(address)?)
-            .append_pair("limit", &limit.to_string());
-        if let Some(cursor) = cursor {
+        {
+            let mut query = url.query_pairs_mut();
             query
-                .append_pair("lt", &cursor.logical_time)
-                .append_pair("hash", &cursor.hash);
+                .append_pair("address", &self.format_address(address)?)
+                .append_pair("limit", &limit.to_string());
+            if let Some(cursor) = cursor {
+                query
+                    .append_pair("lt", &cursor.logical_time)
+                    .append_pair("hash", &cursor.hash);
+            }
         }
-        drop(query);
         let response = self.get(url).await?;
         parse_account_transactions(&response)
     }
