@@ -697,6 +697,17 @@ single-address Iguana session, `enable_ton`, KDF v2 history, and the normal
 withdraw-then-send flow. `npm run build`, `npm run lint`, and `git diff --check`
 passed in the consumer app; lint emitted only pre-existing/generated-code warnings.
 
+Follow-up browser validation (2026-09-11): Chromium/Playwright reproduced a
+wasm panic on GRAM activation: `std::time::Instant::now()` reaches Rust's
+`wasm32-unknown-unknown` unsupported time implementation. `TonRpcClient` now
+uses KDF's cross-target `common::now_ms()` for anonymous-provider throttling;
+its focused suite passed 17/17 tests. The rebuilt optimized WASM is 38,035,086
+bytes (SHA-256 `bc5fc8f2e5903dbe955967c98698c97a224c128a7498d1ca786cb20e3b9175cd`)
+and is shipped in web-wallet commit `29982e9`. A clean temporary browser Iguana
+wallet reached active GRAM status, displayed its address and zero balance, and
+completed the wallet-information/history requests. Toncenter returned one HTTP
+429 during the public-endpoint sequence; KDF retried it and activation completed.
+
 Required runtime RPC sequence (execute for both modes, with funded sends where funds
 exist; task routes and HD-specific cases apply as indicated):
 
