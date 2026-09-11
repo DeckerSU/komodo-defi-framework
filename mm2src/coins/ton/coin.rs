@@ -11,8 +11,7 @@ use crate::{
     VerificationResult, WaitForHTLCTxSpendArgs,
 };
 use async_trait::async_trait;
-use futures::compat::Future01CompatExt;
-use futures::FutureExt;
+use futures::{FutureExt, TryFutureExt};
 use futures01::Future;
 use mm2_err_handle::prelude::*;
 use mm2_number::{BigDecimal, MmNumber};
