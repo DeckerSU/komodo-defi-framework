@@ -1,6 +1,6 @@
 use super::{
-    TonAddress, TonKeyPolicyError, TonNetwork, TonProtocolInfo, TonRpcClientPool, TonRpcError, TonRpcNode,
-    TonSigningSeed, TonWalletError, TonWalletInformation,
+    TonAddress, TonKeyPolicyError, TonProtocolInfo, TonRpcClientPool, TonRpcError, TonRpcNode, TonSigningSeed,
+    TonWalletError, TonWalletInformation,
 };
 use crate::PrivKeyBuildPolicy;
 use derive_more::Display;
@@ -165,6 +165,7 @@ impl Error for TonActivationError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ton::TonNetwork;
     use crate::{IguanaPrivKey, PrivKeyBuildPolicy};
 
     fn config() -> Json {

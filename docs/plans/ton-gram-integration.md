@@ -358,8 +358,10 @@ public-fixture development can continue but funded acceptance remains blocked.
 - [x] Add `mm2src/coins/ton/` with small `mod.rs`, address/wallet/error modules; split
   files only as needed. Reuse `tonlib-core` cell/BOC/signature code rather than
   reimplementing it.
-- [ ] Add `CoinProtocol::TON`, typed network/W5 parameters, `MmCoinEnum::TonCoinVariant`,
-  TON transaction representation and `TxFeeDetails::Ton` as their consumers land.
+- [x] Add `CoinProtocol::TON`, typed network/W5 parameters, and
+  `MmCoinEnum::TonCoinVariant` so GRAM can enter KDF's common coin registry.
+  A TON transaction representation and `TxFeeDetails::Ton` belong with the withdrawal
+  implementation, where the final fee response shape is known.
 - [x] Encode nano amounts with bounded checked integer arithmetic; no floats, overflow,
   negative/zero send amounts, or fractional precision beyond 9 decimals.
 - [ ] Preserve friendly address flags separately from the raw workchain/account hash.

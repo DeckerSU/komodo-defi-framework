@@ -3824,6 +3824,7 @@ pub enum MmCoinEnum {
     SiaCoinVariant(SiaCoin),
     SolanaCoinVariant(solana::SolanaCoin),
     SolanaTokenVariant(solana::SolanaToken),
+    TonCoinVariant(ton::TonCoin),
     #[cfg(any(test, feature = "for-tests"))]
     TestVariant(TestCoin),
 }
@@ -3914,6 +3915,12 @@ impl From<solana::SolanaToken> for MmCoinEnum {
     }
 }
 
+impl From<ton::TonCoin> for MmCoinEnum {
+    fn from(c: ton::TonCoin) -> MmCoinEnum {
+        MmCoinEnum::TonCoinVariant(c)
+    }
+}
+
 // NB: When stable and groked by IDEs, `enum_dispatch` can be used instead of `Deref` to speed things up.
 impl Deref for MmCoinEnum {
     type Target = dyn MmCoin;
@@ -3933,6 +3940,7 @@ impl Deref for MmCoinEnum {
             MmCoinEnum::SiaCoinVariant(ref c) => c,
             MmCoinEnum::SolanaCoinVariant(ref c) => c,
             MmCoinEnum::SolanaTokenVariant(ref c) => c,
+            MmCoinEnum::TonCoinVariant(ref c) => c,
             #[cfg(any(test, feature = "for-tests"))]
             MmCoinEnum::TestVariant(ref c) => c,
         }
