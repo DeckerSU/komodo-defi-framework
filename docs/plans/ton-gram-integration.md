@@ -1,7 +1,9 @@
 # TON / GRAM wallet integration plan
 
-Status: implementation in progress; M0–M4 are substantially complete, and M5 now has
-native BOC construction, exact fee estimation and legacy withdrawal/broadcast support.
+Status: implementation in progress; M0–M6 are complete. M7 has persisted paginated
+history and both RPC readers, M8 has history and balance streaming, and M9 has a
+reproducible runtime/curl suite. The remaining M7/M8 finality, cursor, accounting and
+broader lifecycle work remains explicitly unchecked below.
 Date: 2026-09-10.
 Implementation branch: `feat/ton-gram-integration`, created from local `dev` at
 `e686ef3500585f01c9f0e89c8c01bc036c42253c`.
