@@ -4,6 +4,7 @@
 //! wallet helpers in this module therefore keep the key derivation and wallet
 //! parameters explicit.
 
+mod activation;
 mod address;
 mod amount;
 mod client;
@@ -14,6 +15,7 @@ mod state;
 mod transaction;
 mod wallet;
 
+pub use activation::{TonActivationError, TonActivationRequest, TonCoinConfig, TonWalletContext};
 pub use address::{TonAddress, TonAddressError, TonAddressFormat, TonNetwork};
 pub use amount::{TonAmount, TonAmountError};
 pub use client::{

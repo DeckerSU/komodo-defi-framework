@@ -1,0 +1,246 @@
+use super::{
+    TonAddress, TonKeyPolicyError, TonNetwork, TonProtocolInfo, TonRpcClientPool, TonRpcError, TonRpcNode,
+    TonSigningSeed, TonWalletError, TonWalletInformation,
+};
+use crate::PrivKeyBuildPolicy;
+use derive_more::Display;
+use serde::Deserialize;
+use serde_json::{self as json, Value as Json};
+use std::error::Error;
+
+/// Validated native-GRAM configuration extracted from the shared `coins` artifact.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TonCoinConfig {
+    pub ticker: String,
+    pub required_confirmations: u64,
+    pub protocol: TonProtocolInfo,
+}
+
+impl TonCoinConfig {
+    pub fn from_json(value: Json) -> Result<Self, TonActivationError> {
+        let config: TonCoinConfigJson =
+            json::from_value(value).map_err(|_| TonActivationError::InvalidConfiguration)?;
+        if config.coin.trim().is_empty() || config.decimals != super::TON_DECIMALS || config.required_confirmations == 0
+        {
+            return Err(TonActivationError::InvalidConfiguration);
+        }
+        if !config.wallet_only {
+            return Err(TonActivationError::WalletOnlyRequired);
+        }
+        if config.protocol.protocol_type != "TON" {
+            return Err(TonActivationError::UnsupportedProtocol);
+        }
+
+        Ok(TonCoinConfig {
+            ticker: config.coin,
+            required_confirmations: config.required_confirmations,
+            protocol: config.protocol.protocol_data,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+struct TonCoinConfigJson {
+    coin: String,
+    decimals: u8,
+    required_confirmations: u64,
+    wallet_only: bool,
+    protocol: TonProtocolEnvelope,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TonProtocolEnvelope {
+    #[serde(rename = "type")]
+    protocol_type: String,
+    protocol_data: TonProtocolInfo,
+}
+
+/// Request fields required to initialize native GRAM.
+///
+/// Nodes are supplied by the caller or generated application configuration.
+/// Credentials belong only here, never in the shared `coins` repository.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TonActivationRequest {
+    pub nodes: Vec<TonRpcNode>,
+    #[serde(default)]
+    pub required_confirmations: Option<u64>,
+    #[serde(default)]
+    pub tx_history: bool,
+}
+
+/// Wallet identity and RPC access created before registering a TON coin.
+///
+/// This context owns the zeroizing signing seed. It has no side effects: the
+/// future activation service must query account state and register the final
+/// `TonCoin` only after all validation succeeds.
+pub struct TonWalletContext {
+    config: TonCoinConfig,
+    signing_seed: TonSigningSeed,
+    rpc: TonRpcClientPool,
+    required_confirmations: u64,
+    tx_history: bool,
+}
+
+impl TonWalletContext {
+    pub fn new(
+        config: TonCoinConfig,
+        request: TonActivationRequest,
+        key_policy: PrivKeyBuildPolicy,
+    ) -> Result<Self, TonActivationError> {
+        let required_confirmations = request.required_confirmations.unwrap_or(config.required_confirmations);
+        if required_confirmations == 0 {
+            return Err(TonActivationError::InvalidRequiredConfirmations);
+        }
+        let signing_seed = TonSigningSeed::from_priv_key_policy(key_policy).map_err(TonActivationError::KeyPolicy)?;
+        // Derive once during preflight so invalid W5 construction fails before any
+        // network request or future coin registration. The context retains only
+        // the seed and derives a short-lived address value for each caller.
+        signing_seed
+            .address(config.protocol.wallet_params())
+            .map_err(TonActivationError::WalletConstruction)?;
+        let rpc = TonRpcClientPool::new(request.nodes, config.protocol.network).map_err(TonActivationError::Rpc)?;
+
+        Ok(TonWalletContext {
+            config,
+            signing_seed,
+            rpc,
+            required_confirmations,
+            tx_history: request.tx_history,
+        })
+    }
+
+    pub fn ticker(&self) -> &str {
+        &self.config.ticker
+    }
+
+    pub fn address(&self) -> Result<TonAddress, TonActivationError> {
+        self.signing_seed
+            .address(self.config.protocol.wallet_params())
+            .map_err(TonActivationError::WalletConstruction)
+    }
+
+    pub fn protocol(&self) -> TonProtocolInfo {
+        self.config.protocol
+    }
+
+    pub fn required_confirmations(&self) -> u64 {
+        self.required_confirmations
+    }
+
+    pub fn tx_history_enabled(&self) -> bool {
+        self.tx_history
+    }
+
+    pub async fn wallet_information(&self) -> Result<TonWalletInformation, TonActivationError> {
+        let address = self.address()?;
+        self.rpc
+            .wallet_information_with_seqno(&address)
+            .await
+            .map_err(TonActivationError::Rpc)
+    }
+}
+
+#[derive(Debug, Display, Eq, PartialEq)]
+pub enum TonActivationError {
+    #[display(fmt = "Invalid TON coin configuration")]
+    InvalidConfiguration,
+    #[display(fmt = "GRAM must be configured as a wallet-only coin")]
+    WalletOnlyRequired,
+    #[display(fmt = "Coin configuration is not a TON protocol")]
+    UnsupportedProtocol,
+    #[display(fmt = "TON required confirmations must be greater than zero")]
+    InvalidRequiredConfirmations,
+    #[display(fmt = "Unable to select a TON wallet key source: {_0}")]
+    KeyPolicy(TonKeyPolicyError),
+    #[display(fmt = "Unable to construct TON wallet identity: {_0}")]
+    WalletConstruction(TonWalletError),
+    #[display(fmt = "Unable to initialize TON RPC: {_0}")]
+    Rpc(TonRpcError),
+}
+
+impl Error for TonActivationError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{IguanaPrivKey, PrivKeyBuildPolicy};
+
+    fn config() -> Json {
+        json::json!({
+            "coin": "GRAM",
+            "decimals": 9,
+            "required_confirmations": 1,
+            "wallet_only": true,
+            "protocol": {
+                "type": "TON",
+                "protocol_data": {
+                    "network": "Mainnet",
+                    "wallet_version": "V5R1",
+                    "workchain": 0,
+                    "subwallet_number": 0
+                }
+            }
+        })
+    }
+
+    fn request() -> TonActivationRequest {
+        TonActivationRequest {
+            nodes: vec![TonRpcNode {
+                url: "https://toncenter.com/api/v2".to_owned(),
+                api_key: None,
+            }],
+            required_confirmations: None,
+            tx_history: false,
+        }
+    }
+
+    #[test]
+    fn accepts_the_native_gram_wallet_only_configuration() {
+        let config = TonCoinConfig::from_json(config()).unwrap();
+        assert_eq!(config.ticker, "GRAM");
+        assert_eq!(config.protocol.network, TonNetwork::Mainnet);
+    }
+
+    #[test]
+    fn rejects_non_wallet_only_or_non_native_gram_configuration() {
+        let mut not_wallet_only = config();
+        not_wallet_only["wallet_only"] = Json::Bool(false);
+        assert_eq!(
+            TonCoinConfig::from_json(not_wallet_only),
+            Err(TonActivationError::WalletOnlyRequired),
+        );
+
+        let mut wrong_decimals = config();
+        wrong_decimals["decimals"] = Json::from(8);
+        assert_eq!(
+            TonCoinConfig::from_json(wrong_decimals),
+            Err(TonActivationError::InvalidConfiguration),
+        );
+    }
+
+    #[test]
+    fn builds_iguana_context_without_network_side_effects() {
+        let context = TonWalletContext::new(
+            TonCoinConfig::from_json(config()).unwrap(),
+            request(),
+            PrivKeyBuildPolicy::IguanaPrivKey(IguanaPrivKey::from([0x42; 32])),
+        )
+        .unwrap();
+
+        assert_eq!(context.ticker(), "GRAM");
+        assert_eq!(context.required_confirmations(), 1);
+        assert!(!context.tx_history_enabled());
+        assert_eq!(
+            context.address().unwrap().format(
+                super::super::TonAddressFormat::Friendly {
+                    bounceable: false,
+                    urlsafe: true,
+                },
+                TonNetwork::Mainnet,
+            ),
+            "UQA_O1iT-mrBM2FBjVKUiM9O6Qv--yzmD9F8bIXS3aq6jrad",
+        );
+    }
+}

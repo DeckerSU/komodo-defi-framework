@@ -420,8 +420,11 @@ fails without changing storage.
   Do not turn provider errors into zero balances. Verify selected endpoints/network using
   a supported network identity check.
 - [ ] Implement immediate/task activation and balance; expose actual normalized address,
-  network, wallet version, key mode and supported capabilities. Register only after
-  successful initialization; clean up partial/cancelled activation.
+  network, wallet version, key mode and supported capabilities. `TonWalletContext`
+  now validates the native GRAM configuration (`wallet_only`, 9 decimals, TON/W5
+  parameters), combines it with one KDF key policy and a bounded RPC pool without
+  registration side effects. Register only after successful initialization; clean up
+  partial/cancelled activation.
 - [ ] Add feature-gated network tests following `tron-network-tests`; ordinary tests
   use deterministic HTTP fixtures/mock servers without funded credentials.
 
