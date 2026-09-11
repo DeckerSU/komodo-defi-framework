@@ -1287,7 +1287,10 @@ async fn load_persisted_pending_messages(path: &std::path::Path) -> Result<Vec<S
 mod tests {
     use super::*;
     use crate::{
-        ton::{build_signed_transfer, TonNetwork, TonTransferRequest, TonWalletParams},
+        ton::{
+            build_signed_transfer, TonAccountTransaction, TonNetwork, TonTransactionMessage, TonTransferRequest,
+            TonWalletParams,
+        },
         IguanaPrivKey, PrivKeyBuildPolicy,
     };
     use serde_json::json;
@@ -1396,6 +1399,48 @@ mod tests {
             canonical_history_address(provider_address, TonNetwork::Mainnet),
             canonical
         );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn history_details_use_the_wallets_canonical_address_encoding() {
+        let coin = TonCoin::new(
+            config(),
+            request(),
+            PrivKeyBuildPolicy::IguanaPrivKey(IguanaPrivKey::from([0x42; 32])),
+        )
+        .unwrap();
+        let my_address = coin.my_address().unwrap();
+        let provider_destination = coin.address().unwrap().format(
+            TonAddressFormat::Friendly {
+                bounceable: true,
+                urlsafe: true,
+            },
+            TonNetwork::Mainnet,
+        );
+        let details = block_on(coin.transaction_details_from_account_transaction(
+            &my_address,
+            TonAccountTransaction {
+                logical_time: "1".to_owned(),
+                hash: BASE64.encode([0x42; 32]),
+                timestamp: 1,
+                fee: TonAmount::ZERO,
+                inbound_message: Some(TonTransactionMessage {
+                    hash: "message".to_owned(),
+                    source: Some("UQBYGTsWwxh00p3Fq_EdwzQ2uRzuptfxP5crEOsfRT6zDOS4".to_owned()),
+                    destination: Some(provider_destination),
+                    value: TonAmount::from_nano(1),
+                }),
+                outbound_messages: Vec::new(),
+                inbound_message_hash: None,
+                outbound_message_hashes: Vec::new(),
+                boc: Some(vec![1]),
+            },
+        ))
+        .unwrap()
+        .unwrap();
+
+        assert!(details.to.contains(&my_address));
     }
 
     #[test]
