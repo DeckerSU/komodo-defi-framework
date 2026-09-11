@@ -83,12 +83,12 @@ sse_pid=$!
 sleep 1
 kill -0 "$sse_pid" 2>/dev/null
 balance_stream=$(rpc <<JSON
-{"mmrpc":"2.0","userpass":"$userpass","method":"balance::enable","params":{"coin":"GRAM","client_id":1}}
+{"mmrpc":"2.0","userpass":"$userpass","method":"stream::balance::enable","params":{"coin":"GRAM","client_id":1}}
 JSON
 )
 printf '%s' "$balance_stream" | assert_json '.result.streamer_id == "BALANCE:GRAM"'
 history_stream=$(rpc <<JSON
-{"mmrpc":"2.0","userpass":"$userpass","method":"tx_history::enable","params":{"coin":"GRAM","client_id":1}}
+{"mmrpc":"2.0","userpass":"$userpass","method":"stream::tx_history::enable","params":{"coin":"GRAM","client_id":1}}
 JSON
 )
 printf '%s' "$history_stream" | assert_json '.result.streamer_id == "TX_HISTORY:GRAM"'
