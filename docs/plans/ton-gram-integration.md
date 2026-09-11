@@ -421,9 +421,12 @@ Inspected coins base: `7158b94dfaa11ca6117be2425f86ecda606ab881`, local `master`
 No GRAM, TON or SOL entry exists in its root `coins` file. TRX is wallet-only and its
 HTTP endpoints currently live in `ethereum/TRX`; do not infer a `tron/` directory exists.
 
-- [ ] Create a matching integration branch in `../coins` before modifying that separate
-  repository; KDF's branch does not protect files in another Git repository.
-- [ ] Add a single native GRAM entry to `../coins/coins`. Proposed minimal schema:
+- [x] Create a matching `../coins` integration branch before modifying that separate
+  repository: `feat/ton-gram-integration` at `512ac11e`. KDF's branch does not
+  protect files in another Git repository.
+- [x] Add the single native GRAM entry to `../coins/coins`; it has `wallet_only: true`,
+  9 decimals, one confirmation, W5R1 Mainnet/workchain 0/subwallet 0, and no
+  invented BIP44 path, swap contract, or EVM metadata. Schema:
 
 ```json
 {
@@ -446,17 +449,19 @@ HTTP endpoints currently live in `ethereum/TRX`; do not infer a `tron/` director
 }
 ```
 
-- [ ] Finalize this schema with `CoinProtocol::TON`; validate supported combinations.
-  Do not add a BIP44 `derivation_path`, swap contract, EVM chain ID or fabricated market ID.
-- [ ] Add `ton/GRAM` for provider metadata (`rpc_nodes` with explicit v2/v3 URLs),
-  `explorers/GRAM`, and fixture-backed generator support in
-  `utils/generate_app_configs.py`. Keep provider credentials out of the coins repository.
-- [ ] Ensure GRAM is classified as a native TON platform with HTTP nodes, never an
-  Electrum/UTXO/EVM coin. Audit protocol mapping, parent/platform resolution and filters.
+- [x] Finalize the entry against `CoinProtocol::TON`'s strict parameters and validate
+  JSON/ticker uniqueness locally. KDF activation still needs `TonCoin` before it can
+  load the artifact at runtime.
+- [x] Add `ton/GRAM` provider metadata with the explicit TON Center v2 endpoint,
+  `explorers/GRAM`, and native TON-directory support in `utils/generate_app_configs.py`.
+  Provider credentials are not stored in the coins repository.
+- [x] Ensure GRAM is classified as a native TON platform with HTTP nodes, never an
+  Electrum/UTXO/EVM coin. The config generator reads `ton/GRAM` directly.
 - [ ] Update README classification; add only legitimate existing branding if needed.
   Avoid unrelated icon/config regeneration or network scans during this change.
-- [ ] Validate JSON, ticker uniqueness, exact decimals/network/W5 settings and generated
-  application config. KDF must load the actual updated coins artifact successfully.
+- [x] Validate JSON, ticker uniqueness, exact decimals/network/W5 settings, provider and
+  explorer fixtures, plus generator Python syntax. KDF must load the actual updated
+  coins artifact successfully once `TonCoin` activation exists.
 
 The test runtime must copy **`../coins/coins`**, not the coins repository directory or
 only a generated GUI configuration. Include separate provider metadata if launch
@@ -733,6 +738,9 @@ Do not label an unavailable environment or unrun feature gate as a passed check.
   and `KeyPairPolicy::TonMnemonic` were removed after the derivation-policy review:
   they would prevent a native-TON-only phrase from deriving existing KDF HD coins.
   KDF now keeps its normal BIP39 startup for all coins.
+- Added the matching `../coins` branch at `512ac11e`: native GRAM configuration,
+  TON Center v2 node metadata, Tonscan explorer, and generator support for `ton/`.
+  Validation confirms the schema and provider artifact without putting credentials in Git.
 - Added an asynchronous TON Center v2 client for `getWalletInformation`. It validates
   the endpoint shape, sends dynamic API-key headers on native and WASM transports,
   bounds the request duration, preserves an absent active-account seqno as `None`, and
