@@ -718,6 +718,12 @@ Do not label an unavailable environment or unrun feature gate as a passed check.
   cell hash distinctly from a transaction hash. The isolated source-linked suite now
   runs **14 tests passed**, including internal recipient/amount/bounce preservation,
   deploy BOC round trip, recipient network/bounce rejection, and a wasm32 check.
+- Added the strict typed `CoinProtocol::TON` schema: explicit network, W5R1 version,
+  workchain and bounded subwallet number. The protocol has no platform or contract
+  address, rejects legacy pubkey-to-address derivation, and is deliberately rejected
+  by legacy activation until the v2 TON activator is implemented. The source-linked
+  suite now runs **17 tests passed**, including schema round trips and invalid
+  version/subwallet/unknown-field checks, plus the wasm32 check.
 - The source-linked primitive suite described above is the only KDF TON code validation so
   far. `cargo check --offline -p coins --lib` currently stops in the baseline `mm2_io`
   crate with 69 `std::io::Error: NotMmError` errors under the installed toolchain, before

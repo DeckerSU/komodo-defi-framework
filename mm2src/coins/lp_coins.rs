@@ -4874,6 +4874,7 @@ pub enum CoinProtocol {
     },
     SOLANA(solana::SolanaProtocolInfo),
     SOLANATOKEN(solana::SolanaTokenProtocolInfo),
+    TON(ton::TonProtocolInfo),
 }
 
 #[derive(Clone, Debug, Deserialize, Display, PartialEq, Serialize)]
@@ -4916,7 +4917,8 @@ impl CoinProtocol {
             | CoinProtocol::TRX { .. }
             | CoinProtocol::BCH { .. }
             | CoinProtocol::TENDERMINT(_)
-            | CoinProtocol::ZHTLC(_) => None,
+            | CoinProtocol::ZHTLC(_)
+            | CoinProtocol::TON(_) => None,
             CoinProtocol::SIA => None,
             CoinProtocol::SOLANA(_) => None,
             CoinProtocol::SOLANATOKEN(info) => Some(&info.platform),
@@ -4938,7 +4940,8 @@ impl CoinProtocol {
             | CoinProtocol::TENDERMINT(_)
             | CoinProtocol::TENDERMINTTOKEN(_)
             | CoinProtocol::ZHTLC(_)
-            | CoinProtocol::NFT { .. } => None,
+            | CoinProtocol::NFT { .. }
+            | CoinProtocol::TON(_) => None,
             #[cfg(not(target_arch = "wasm32"))]
             CoinProtocol::LIGHTNING { .. } => None,
             CoinProtocol::SIA => None,
@@ -5299,6 +5302,7 @@ pub async fn lp_coininit(ctx: &MmArc, ticker: &str, req: &Json) -> Result<MmCoin
         },
         CoinProtocol::SOLANA(_) => return ERR!("SOLANA is not supported by lp_coininit"),
         CoinProtocol::SOLANATOKEN(_) => return ERR!("SOLANATOKEN is not supported by lp_coininit"),
+        CoinProtocol::TON(_) => return ERR!("TON is not supported by lp_coininit"),
     };
 
     let register_params = RegisterCoinParams {
@@ -5963,6 +5967,9 @@ pub fn address_by_coin_conf_and_pubkey_str(
         CoinProtocol::SOLANA(_) => ERR!("address_by_coin_conf_and_pubkey_str is not implemented for SOLANA yet."),
         CoinProtocol::SOLANATOKEN(_) => {
             ERR!("address_by_coin_conf_and_pubkey_str is not implemented for SOLANATOKEN yet.")
+        },
+        CoinProtocol::TON(_) => {
+            ERR!("address_by_coin_conf_and_pubkey_str is not supported for TON: a W5R1 address requires an Ed25519 signing key and contract parameters")
         },
     }
 }
