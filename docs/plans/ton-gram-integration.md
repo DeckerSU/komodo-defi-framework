@@ -741,6 +741,31 @@ disposable recipient and Toncenter accepted external message
 `0G/JZSmPUmy6jR6uTxfJ42FUwIbx8h2ZE8WKddL3IfA=`. The source balance changed
 from `0.104999999` to `0.103013860 GRAM`, confirming inclusion and the network fee.
 
+Public-endpoint hardening (2026-09-11): a browser HAR showed that the anonymous
+Toncenter client can return HTTP 429 even when requests start exactly one second
+apart. It also showed history consuming an additional v3 request for each account
+transaction solely to fill an optional masterchain height, delaying a user broadcast.
+The anonymous scheduler now keeps a 1.1-second rolling-window margin. All POSTs
+retry an explicit 429 once using the identical request; this is safe because the
+provider has confirmed it did not accept that request. Timeouts and transport errors
+are still never retried. History now relies on its v2 account-transaction response and
+stores height zero when v3 enrichment is unavailable, eliminating the per-record v3
+traffic. Focused TON tests passed 60/60 and the `coins` wasm32 check passed.
+
+The native transport regression test uses a local endpoint and asserts that a successful
+`send_boc_return_hash` call first emits `POST /api/v2/sendBocReturnHash`, JSON content
+type, and the exact base64 BOC body. It then returns a synthetic Toncenter success
+envelope; KDF reports the message hash only after receiving that response. This test
+runs without an external provider or funds.
+
+The HAR message references were independently queried through Toncenter v3. The
+external messages `rkXfs/5+SpgbI0IZGqjruVZLjCneS+tkVHRIfMpCu7M=` and
+`BiqEb06fpM4VQuqeVIhoIFo8nKgKbybVrUgh0uioTvc=` are finalized W5 requests
+with successful compute/action phases and non-bounced outbound transfers of 0.001 and
+0.01 GRAM respectively to `UQBp9kUhF-16V-_J2vQ__I9oDh2ftCNrWXA3zJ8HHobipN0E`.
+The remaining inspected hashes in that sequence represented a 0.003-GRAM self-transfer
+and its recipient-side transaction, rather than failed sends.
+
 Logout/history lifecycle fix (2026-09-11): browser logs showed that `MmCtx` and
 the `swap`/`ordermatch` IndexedDB instances were dropped after logout, while the
 wallet `tx_history` instance remained open. `CoinsContext` now listens for

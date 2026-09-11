@@ -23,7 +23,9 @@ const MAX_BOC_BYTES: usize = 1024 * 1024;
 const MAX_TRANSACTION_PAGE_SIZE: u8 = 100;
 /// TON Center's anonymous API allowance is one request per second. A client
 /// supplied API key uses the provider's authenticated allowance instead.
-const PUBLIC_API_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
+// The documented anonymous allowance is one request per second. Keep a small
+// margin because Toncenter applies it at the edge on a rolling window.
+const PUBLIC_API_REQUEST_INTERVAL: Duration = Duration::from_millis(1_100);
 const PUBLIC_RATE_LIMIT_RETRY_DELAY: Duration = Duration::from_secs(1);
 #[cfg(target_arch = "wasm32")]
 const TON_API_KEY_HEADER: &str = "X-API-Key";
@@ -151,7 +153,10 @@ impl TonRpcClientPool {
         Err(last_error.unwrap_or(TonRpcError::NoEndpoints))
     }
 
-    /// Submits through the configured primary endpoint exactly once.
+    /// Submits through the configured primary endpoint. A response with HTTP
+    /// 429 is known not to have accepted the BOC and may be retried once; a
+    /// timeout is deliberately never retried because its chain outcome is
+    /// unknown.
     pub async fn send_boc_return_hash(&self, boc: &[u8]) -> Result<TonBroadcastResult, TonRpcError> {
         let client = self.clients.first().ok_or(TonRpcError::NoEndpoints)?;
         client.send_boc_return_hash(boc).await
@@ -439,31 +444,37 @@ impl TonRpcClient {
     }
 
     async fn post(&self, url: Url, body: Vec<u8>) -> Result<Vec<u8>, TonRpcError> {
-        self.throttle_public_request().await;
         #[cfg(not(target_arch = "wasm32"))]
         {
             use http::header::{HeaderName, HeaderValue, CONTENT_TYPE};
             use mm2_net::transport::slurp_req;
 
-            let mut request = http::Request::builder()
-                .method(http::Method::POST)
-                .uri(url.as_str())
-                .header(CONTENT_TYPE, "application/json")
-                .body(body)
-                .map_err(|_| TonRpcError::InvalidEndpoint)?;
-            if let Some(api_key) = self.api_key.as_deref() {
-                let header = HeaderValue::from_str(api_key).map_err(|_| TonRpcError::InvalidApiKey)?;
-                request
-                    .headers_mut()
-                    .insert(HeaderName::from_static("x-api-key"), header);
-            }
+            for attempt in 0..2 {
+                self.throttle_public_request().await;
+                let mut request = http::Request::builder()
+                    .method(http::Method::POST)
+                    .uri(url.as_str())
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(body.clone())
+                    .map_err(|_| TonRpcError::InvalidEndpoint)?;
+                if let Some(api_key) = self.api_key.as_deref() {
+                    let header = HeaderValue::from_str(api_key).map_err(|_| TonRpcError::InvalidApiKey)?;
+                    request
+                        .headers_mut()
+                        .insert(HeaderName::from_static("x-api-key"), header);
+                }
 
-            match Box::pin(slurp_req(request)).timeout(TON_RPC_TIMEOUT).await {
-                Ok(Ok((status, _headers, body))) if status.is_success() => Ok(body),
-                Ok(Ok((status, _headers, _body))) => Err(TonRpcError::HttpStatus(status.as_u16())),
-                Ok(Err(_)) => Err(TonRpcError::Transport),
-                Err(_) => Err(TonRpcError::Timeout),
+                match Box::pin(slurp_req(request)).timeout(TON_RPC_TIMEOUT).await {
+                    Ok(Ok((status, _headers, body))) if status.is_success() => return Ok(body),
+                    Ok(Ok((status, _headers, _body))) if status.as_u16() == 429 && attempt == 0 => {
+                        Timer::sleep(PUBLIC_RATE_LIMIT_RETRY_DELAY.as_secs_f64()).await;
+                    },
+                    Ok(Ok((status, _headers, _body))) => return Err(TonRpcError::HttpStatus(status.as_u16())),
+                    Ok(Err(_)) => return Err(TonRpcError::Transport),
+                    Err(_) => return Err(TonRpcError::Timeout),
+                }
             }
+            Err(TonRpcError::HttpStatus(429))
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -471,20 +482,27 @@ impl TonRpcClient {
             use mm2_net::wasm::http::FetchRequest;
 
             let body = String::from_utf8(body).map_err(|_| TonRpcError::InvalidResponse)?;
-            let mut request = FetchRequest::post(url.as_str())
-                .cors()
-                .body_utf8(body)
-                .header("Content-Type", "application/json");
-            if let Some(api_key) = self.api_key.as_deref() {
-                request = request.header(TON_API_KEY_HEADER, api_key);
-            }
+            for attempt in 0..2 {
+                self.throttle_public_request().await;
+                let mut request = FetchRequest::post(url.as_str())
+                    .cors()
+                    .body_utf8(body.clone())
+                    .header("Content-Type", "application/json");
+                if let Some(api_key) = self.api_key.as_deref() {
+                    request = request.header(TON_API_KEY_HEADER, api_key);
+                }
 
-            match Box::pin(request.request_str()).timeout(TON_RPC_TIMEOUT).await {
-                Ok(Ok((status, body))) if status.is_success() => Ok(body.into_bytes()),
-                Ok(Ok((status, _body))) => Err(TonRpcError::HttpStatus(status.as_u16())),
-                Ok(Err(_)) => Err(TonRpcError::Transport),
-                Err(_) => Err(TonRpcError::Timeout),
+                match Box::pin(request.request_str()).timeout(TON_RPC_TIMEOUT).await {
+                    Ok(Ok((status, body))) if status.is_success() => return Ok(body.into_bytes()),
+                    Ok(Ok((status, _body))) if status.as_u16() == 429 && attempt == 0 => {
+                        Timer::sleep(PUBLIC_RATE_LIMIT_RETRY_DELAY.as_secs_f64()).await;
+                    },
+                    Ok(Ok((status, _body))) => return Err(TonRpcError::HttpStatus(status.as_u16())),
+                    Ok(Err(_)) => return Err(TonRpcError::Transport),
+                    Err(_) => return Err(TonRpcError::Timeout),
+                }
             }
+            Err(TonRpcError::HttpStatus(429))
         }
     }
 
@@ -961,6 +979,46 @@ fn limit_error_message(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(target_arch = "wasm32"))]
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::mpsc,
+        thread,
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn read_http_request(stream: &mut std::net::TcpStream) -> String {
+        let mut request = Vec::new();
+        let mut buffer = [0; 1024];
+        let mut content_length = None;
+        loop {
+            let read = stream.read(&mut buffer).unwrap();
+            assert_ne!(read, 0, "client closed the connection before sending a request");
+            request.extend_from_slice(&buffer[..read]);
+            if content_length.is_none() {
+                if let Some(headers_end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let headers = std::str::from_utf8(&request[..headers_end]).unwrap();
+                    content_length = Some(
+                        headers
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length: "))
+                            .unwrap()
+                            .parse::<usize>()
+                            .unwrap(),
+                    );
+                }
+            }
+            if let (Some(content_length), Some(headers_end)) = (
+                content_length,
+                request.windows(4).position(|window| window == b"\r\n\r\n"),
+            ) {
+                if request.len() >= headers_end + 4 + content_length {
+                    return String::from_utf8(request).unwrap();
+                }
+            }
+        }
+    }
 
     #[test]
     fn parses_an_active_wallet_without_losing_precision() {
@@ -1182,7 +1240,41 @@ mod tests {
         assert_eq!(reserve_public_request_slot(&mut next, now), PUBLIC_API_REQUEST_INTERVAL);
         assert_eq!(
             reserve_public_request_slot(&mut next, now + 500),
-            Duration::from_millis(1500),
+            Duration::from_millis(1700),
         );
+    }
+
+    #[test]
+    fn leaves_a_margin_around_the_public_api_limit() {
+        assert!(PUBLIC_API_REQUEST_INTERVAL > Duration::from_secs(1));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn broadcast_posts_the_exact_boc_to_toncenter_before_reporting_success() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_http_request(&mut stream);
+            request_tx.send(request).unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 39\r\nConnection: close\r\n\r\n{\"ok\":true,\"result\":{\"hash\":\"message\"}}",
+                )
+                .unwrap();
+        });
+        let endpoint = format!("http://{address}/api/v2");
+        let client = TonRpcClient::new(&endpoint, None, TonNetwork::Mainnet).unwrap();
+
+        let result = common::block_on(client.send_boc_return_hash(&[1, 2, 3])).unwrap();
+
+        assert_eq!(result.message_hash, "message");
+        let request = request_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(request.starts_with("POST /api/v2/sendBocReturnHash HTTP/1.1\r\n"));
+        assert!(request.contains("\r\ncontent-type: application/json\r\n"));
+        assert!(request.ends_with("\r\n\r\n{\"boc\":\"AQID\"}"));
+        server.join().unwrap();
     }
 }

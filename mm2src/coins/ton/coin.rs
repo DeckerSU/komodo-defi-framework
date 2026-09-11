@@ -744,10 +744,7 @@ impl TonCoin {
             let next_cursor = transactions.last().map(super::TonAccountTransaction::cursor);
             let mut new_transactions = Vec::new();
             for transaction in transactions {
-                let Some(details) = self
-                    .transaction_details_from_account_transaction(&my_address, transaction)
-                    .await?
-                else {
+                let Some(details) = self.transaction_details_from_account_transaction(&my_address, transaction)? else {
                     continue;
                 };
                 let tx_hash = details
@@ -804,27 +801,16 @@ impl TonCoin {
         }
     }
 
-    async fn transaction_details_from_account_transaction(
+    fn transaction_details_from_account_transaction(
         &self,
         my_address: &str,
         transaction: super::TonAccountTransaction,
     ) -> Result<Option<TransactionDetails>, String> {
         let Some(boc) = transaction.boc else { return Ok(None) };
         let internal_id = ton_hash_bytes(&transaction.hash)?;
-        // The account-transaction page is sufficient to persist history. The
-        // v3 lookup only enriches it with a masterchain height, so a temporary
-        // indexing failure must not discard the entire page or stop syncing.
-        let inbound_height = match transaction.inbound_message_hash.as_deref() {
-            Some(message_hash) => self
-                .0
-                .wallet
-                .message_outcome(message_hash)
-                .await
-                .ok()
-                .flatten()
-                .map(|outcome| outcome.masterchain_seqno),
-            None => None,
-        };
+        // The v2 account-transaction page is sufficient for history. Looking
+        // up each inbound message through v3 merely filled a height and used
+        // up Toncenter's anonymous request quota, delaying broadcasts.
 
         let mut from = HashSet::new();
         let mut to = HashSet::new();
@@ -879,7 +865,7 @@ impl TonCoin {
             spent_by_me: spent_decimal.clone(),
             received_by_me: received_decimal.clone(),
             my_balance_change: received_decimal - spent_decimal,
-            block_height: inbound_height.unwrap_or_default(),
+            block_height: 0,
             timestamp: transaction.timestamp,
             fee_details: Some(TxFeeDetails::Ton(TonTxFeeDetails::from_actual_fee(
                 self.ticker().to_owned(),
@@ -1418,27 +1404,28 @@ mod tests {
             },
             TonNetwork::Mainnet,
         );
-        let details = block_on(coin.transaction_details_from_account_transaction(
-            &my_address,
-            TonAccountTransaction {
-                logical_time: "1".to_owned(),
-                hash: BASE64.encode([0x42; 32]),
-                timestamp: 1,
-                fee: TonAmount::ZERO,
-                inbound_message: Some(TonTransactionMessage {
-                    hash: "message".to_owned(),
-                    source: Some("UQBYGTsWwxh00p3Fq_EdwzQ2uRzuptfxP5crEOsfRT6zDOS4".to_owned()),
-                    destination: Some(provider_destination),
-                    value: TonAmount::from_nano(1),
-                }),
-                outbound_messages: Vec::new(),
-                inbound_message_hash: None,
-                outbound_message_hashes: Vec::new(),
-                boc: Some(vec![1]),
-            },
-        ))
-        .unwrap()
-        .unwrap();
+        let details = coin
+            .transaction_details_from_account_transaction(
+                &my_address,
+                TonAccountTransaction {
+                    logical_time: "1".to_owned(),
+                    hash: BASE64.encode([0x42; 32]),
+                    timestamp: 1,
+                    fee: TonAmount::ZERO,
+                    inbound_message: Some(TonTransactionMessage {
+                        hash: "message".to_owned(),
+                        source: Some("UQBYGTsWwxh00p3Fq_EdwzQ2uRzuptfxP5crEOsfRT6zDOS4".to_owned()),
+                        destination: Some(provider_destination),
+                        value: TonAmount::from_nano(1),
+                    }),
+                    outbound_messages: Vec::new(),
+                    inbound_message_hash: None,
+                    outbound_message_hashes: Vec::new(),
+                    boc: Some(vec![1]),
+                },
+            )
+            .unwrap()
+            .unwrap();
 
         assert!(details.to.contains(&my_address));
     }
