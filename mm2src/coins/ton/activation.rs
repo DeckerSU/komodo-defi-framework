@@ -60,9 +60,10 @@ struct TonProtocolEnvelope {
 ///
 /// Nodes are supplied by the caller or generated application configuration.
 /// Credentials belong only here, never in the shared `coins` repository.
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TonActivationRequest {
+    #[serde(alias = "rpc_nodes")]
     pub nodes: Vec<TonRpcNode>,
     #[serde(default)]
     pub required_confirmations: Option<u64>,
@@ -257,6 +258,12 @@ mod tests {
         .unwrap();
         assert_eq!(request.nodes.len(), 1);
         assert_eq!(request.required_confirmations, Some(2));
+
+        let task_request: TonActivationRequest = serde_json::from_value(json::json!({
+            "rpc_nodes": [{"url": "https://toncenter.com/api/v2"}]
+        }))
+        .unwrap();
+        assert_eq!(task_request.nodes.len(), 1);
 
         assert!(matches!(
             TonActivationRequest::from_legacy_req(&json::json!({})),

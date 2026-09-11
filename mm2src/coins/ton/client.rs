@@ -33,7 +33,7 @@ pub struct TonRpcClient {
 ///
 /// API keys are accepted only from the activation request; the static `coins`
 /// configuration contains endpoint URLs, never credentials.
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TonRpcNode {
     pub url: String,

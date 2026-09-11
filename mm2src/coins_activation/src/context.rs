@@ -5,6 +5,7 @@ use crate::lightning_activation::LightningTaskManagerShared;
 use crate::sia_coin_activation::SiaCoinTaskManagerShared;
 use crate::solana_with_assets::SolanaCoinTaskManagerShared;
 use crate::tendermint_with_assets_activation::TendermintCoinTaskManagerShared;
+use crate::ton_activation::TonCoinTaskManagerShared;
 use crate::utxo_activation::{BchTaskManagerShared, QtumTaskManagerShared, UtxoStandardTaskManagerShared};
 use crate::z_coin_activation::ZcoinTaskManagerShared;
 use mm2_core::mm_ctx::{from_ctx, MmArc};
@@ -23,6 +24,7 @@ pub struct CoinsActivationContext {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) init_lightning_task_manager: LightningTaskManagerShared,
     pub(crate) init_solana_coin_task_manager: SolanaCoinTaskManagerShared,
+    pub(crate) init_ton_coin_task_manager: TonCoinTaskManagerShared,
 }
 
 impl CoinsActivationContext {
@@ -41,6 +43,7 @@ impl CoinsActivationContext {
                 #[cfg(not(target_arch = "wasm32"))]
                 init_lightning_task_manager: RpcTaskManager::new_shared(ctx.event_stream_manager.clone()),
                 init_solana_coin_task_manager: RpcTaskManager::new_shared(ctx.event_stream_manager.clone()),
+                init_ton_coin_task_manager: RpcTaskManager::new_shared(ctx.event_stream_manager.clone()),
             })
         })
     }

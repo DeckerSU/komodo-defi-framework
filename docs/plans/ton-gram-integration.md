@@ -434,9 +434,10 @@ fails without changing storage.
   path now accepts exactly one explicit `nodes` or `rpc_nodes` array, validates the
   native GRAM configuration and KDF key policy, fetches wallet information before
   registration, and allows only deployable or correctly sequenced active accounts.
-  `tx_history: true` is rejected until history exists. The task (v2) endpoint, a typed
-  activation result, W5 code/state verification, cancellation integration, and a
-  capability response remain.
+  The task v2 `enable_ton` endpoint and its `task::enable_ton` lifecycle now use the
+  normal standalone-coin task manager, return typed address/balance/masterchain data,
+  and use standard cancellation cleanup. `tx_history: true` is rejected until history
+  exists. W5 code/state verification and a capability response remain.
 - [ ] Add feature-gated network tests following `tron-network-tests`; ordinary tests
   use deterministic HTTP fixtures/mock servers without funded credentials.
 

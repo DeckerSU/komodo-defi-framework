@@ -57,6 +57,7 @@ use coins::rpc_command::{
 };
 use coins::siacoin::SiaCoin;
 use coins::tendermint::{TendermintCoin, TendermintToken};
+use coins::ton::TonCoin;
 use coins::utxo::bch::BchCoin;
 use coins::utxo::qtum::QtumCoin;
 use coins::utxo::slp::SlpToken;
@@ -248,6 +249,7 @@ async fn dispatcher_v2(request: MmRpcRequest, ctx: MmArc) -> DispatcherResult<Re
         "enable_erc20" => handle_mmrpc(ctx, request, enable_token::<EthCoin>).await,
         "enable_nft" => handle_mmrpc(ctx, request, enable_token::<EthCoin>).await,
         "enable_sia" => handle_mmrpc(ctx, request, init_standalone_coin::<SiaCoin>).await,
+        "enable_ton" => handle_mmrpc(ctx, request, init_standalone_coin::<TonCoin>).await,
         "enable_tendermint_with_assets" => {
             handle_mmrpc(ctx, request, enable_platform_coin_with_tokens::<TendermintCoin>).await
         },
@@ -346,6 +348,10 @@ async fn rpc_task_dispatcher(
         "enable_eth::user_action" => {
             handle_mmrpc(ctx, request, init_platform_coin_with_tokens_user_action::<EthCoin>).await
         },
+        "enable_ton::cancel" => handle_mmrpc(ctx, request, cancel_init_standalone_coin::<TonCoin>).await,
+        "enable_ton::init" => handle_mmrpc(ctx, request, init_standalone_coin::<TonCoin>).await,
+        "enable_ton::status" => handle_mmrpc(ctx, request, init_standalone_coin_status::<TonCoin>).await,
+        "enable_ton::user_action" => handle_mmrpc(ctx, request, init_standalone_coin_user_action::<TonCoin>).await,
         "enable_erc20::cancel" => handle_mmrpc(ctx, request, cancel_init_token::<EthCoin>).await,
         "enable_erc20::init" => handle_mmrpc(ctx, request, init_token::<EthCoin>).await,
         "enable_erc20::status" => handle_mmrpc(ctx, request, init_token_status::<EthCoin>).await,
