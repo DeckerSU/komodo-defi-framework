@@ -717,6 +717,9 @@ wallet `tx_history` instance remained open. `CoinsContext` now listens for
 before the next login. `test_coins_are_disabled_on_context_stop` covers the
 shutdown path. Rust 1.90 native test and a WASM `coins` check passed; a new
 optimized WASM bundle was built for browser regression validation.
+Follow-up validation reverted the earlier WASM stop wait and web activation
+serialization workarounds (`1efc805aa` and `f250f6a` respectively); the
+logout/login history path still works with this lifecycle cleanup alone.
 
 Required runtime RPC sequence (execute for both modes, with funded sends where funds
 exist; task routes and HD-specific cases apply as indicated):
