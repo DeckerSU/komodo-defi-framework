@@ -381,6 +381,11 @@ subwallet counter uniqueness/bounds.
   key-policy variant. HD startup remains the existing BIP39 path for every coin.
 - [x] Derive GRAM's Ed25519 signing seed using TEP-3 `m/44'/607'/0'`; add a public
   BIP39→SLIP-10→W5R1 vector without exposing a mnemonic.
+- [x] Bind the existing KDF `PrivKeyBuildPolicy` to a non-serializable, zeroizing
+  TON signing-seed type: Iguana copies its 32 existing private-key bytes exactly;
+  HD derives the fixed TEP-3 path from `GlobalHDAccountCtx`; Trezor and WalletConnect
+  return explicit unsupported errors. This is the activation key-source boundary;
+  it does not yet persist wallet metadata or register a coin.
 - [ ] Preserve named/encrypted wallet metadata and deterministic DB identity across restart.
 - [ ] Wire account-balance and selector handling for the sole TON address.
 - [ ] Add unsupported-new-address/account/scan handling at both direct and task boundaries.
