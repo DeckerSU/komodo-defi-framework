@@ -28,7 +28,9 @@ pub use hd::{derive_ton_hd_seed, TonHdDerivationError, TON_MULTICHAIN_DERIVATION
 pub use key::{TonKeyPolicyError, TonSigningSeed};
 pub use protocol::{TonProtocolInfo, TonWalletVersion};
 pub use state::{TonAccountStateError, TonTransferState};
-pub use transaction::{build_signed_transfer, TonSignedTransfer, TonTransferError, TonTransferRequest};
+pub use transaction::{
+    build_fee_estimate_request, build_signed_transfer, TonSignedTransfer, TonTransferError, TonTransferRequest,
+};
 pub use wallet::{TonSubwalletId, TonWalletError, TonWalletParams};
 
 pub const TON_DECIMALS: u8 = 9;
