@@ -261,6 +261,16 @@ impl MarketCoinOps for TonCoin {
             async move {
                 validate_external_boc(&boc)?;
                 let message_hash = external_message_hash(&boc)?;
+                // A prior successful broadcast remains pending until its
+                // inbound external message is visible in account history.
+                // Reconcile it here before rejecting a later user send, so a
+                // confirmed W5 message never blocks this wallet for the rest
+                // of its KDF session.
+                if coin.has_pending_messages() {
+                    coin.reconcile_pending_messages()
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
                 coin.register_pending_message(&message_hash)?;
                 if let Err(error) = coin.persist_pending_messages().await {
                     coin.remove_pending_message(&message_hash);
@@ -955,19 +965,29 @@ impl TonCoin {
         let observed: Vec<_> = transactions
             .iter()
             .filter_map(|transaction| transaction.inbound_message_hash.as_deref())
+            .map(str::to_owned)
             .collect();
-        let removed = {
-            let mut pending = self.0.pending_messages.lock();
-            let before = pending.len();
-            pending.retain(|pending_hash| !observed.iter().any(|hash| ton_hashes_equal(pending_hash, hash)));
-            before - pending.len()
-        };
+        let removed = self.remove_observed_pending_messages(&observed);
         if removed != 0 {
             self.persist_pending_messages()
                 .await
                 .map_err(TonActivationError::PendingMessagePersistence)?;
         }
         Ok(removed)
+    }
+
+    fn has_pending_messages(&self) -> bool {
+        !self.0.pending_messages.lock().is_empty()
+    }
+
+    fn remove_observed_pending_messages(&self, observed: &[String]) -> usize {
+        let removed = {
+            let mut pending = self.0.pending_messages.lock();
+            let before = pending.len();
+            pending.retain(|pending_hash| !observed.iter().any(|hash| ton_hashes_equal(pending_hash, hash)));
+            before - pending.len()
+        };
+        removed
     }
 
     async fn build_withdraw(&self, req: WithdrawRequest) -> Result<TransactionDetails, MmError<WithdrawError>> {
@@ -1368,6 +1388,23 @@ mod tests {
         assert!(ton_hashes_equal(&hex::encode(raw), &BASE64.encode(raw)));
         assert!(ton_hashes_equal(&hex::encode(raw), &URL_SAFE_NO_PAD.encode(raw)));
         assert!(!ton_hashes_equal(&hex::encode(raw), &hex::encode([0xcdu8; 32])));
+    }
+
+    #[test]
+    fn releases_a_pending_message_once_account_history_observes_it() {
+        let coin = TonCoin::new(
+            config(),
+            request(),
+            PrivKeyBuildPolicy::IguanaPrivKey(IguanaPrivKey::from([0x42; 32])),
+        )
+        .unwrap();
+        let observed = [0xabu8; 32];
+        coin.register_pending_message(&hex::encode(observed)).unwrap();
+        coin.register_pending_message(&hex::encode([0xcdu8; 32])).unwrap_err();
+
+        assert_eq!(coin.remove_observed_pending_messages(&[BASE64.encode(observed)]), 1);
+        assert!(!coin.has_pending_messages());
+        assert!(coin.register_pending_message(&hex::encode([0xcdu8; 32])).is_ok());
     }
 
     #[test]

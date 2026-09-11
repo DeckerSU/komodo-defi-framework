@@ -758,6 +758,16 @@ type, and the exact base64 BOC body. It then returns a synthetic Toncenter succe
 envelope; KDF reports the message hash only after receiving that response. This test
 runs without an external provider or funds.
 
+Pending-message reconciliation follow-up (2026-09-11): an external W5 message is
+intentionally retained after provider acceptance so a second message cannot reuse its
+sequence number while the first is unresolved. The browser send flow previously only
+reconciled that set on activation or through swap confirmation, leaving a confirmed
+message to block every later `send_raw_transaction` locally before it could make an
+HTTP broadcast. Before a new broadcast, KDF now checks account history when a pending
+message exists and removes hashes already observed as inbound external messages. A
+still-unobserved message remains an explicit safety error. The regression test covers
+base64/hex matching and proves that an observed message frees the sole wallet slot.
+
 The HAR message references were independently queried through Toncenter v3. The
 external messages `rkXfs/5+SpgbI0IZGqjruVZLjCneS+tkVHRIfMpCu7M=` and
 `BiqEb06fpM4VQuqeVIhoIFo8nKgKbybVrUgh0uioTvc=` are finalized W5 requests
