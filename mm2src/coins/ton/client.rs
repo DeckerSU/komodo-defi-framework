@@ -149,9 +149,16 @@ impl TonRpcClientPool {
     }
 
     pub async fn message_masterchain_seqno(&self, message_hash: &str) -> Result<Option<u64>, TonRpcError> {
+        Ok(self
+            .message_outcome(message_hash)
+            .await?
+            .map(|outcome| outcome.masterchain_seqno))
+    }
+
+    pub async fn message_outcome(&self, message_hash: &str) -> Result<Option<TonMessageOutcome>, TonRpcError> {
         let mut last_error = None;
         for client in &self.clients {
-            match client.message_masterchain_seqno(message_hash).await {
+            match client.message_outcome(message_hash).await {
                 Ok(result) => return Ok(result),
                 Err(error) if error.is_retryable() => last_error = Some(error),
                 Err(error) => return Err(error),
@@ -342,6 +349,13 @@ impl TonRpcClient {
     }
 
     pub async fn message_masterchain_seqno(&self, message_hash: &str) -> Result<Option<u64>, TonRpcError> {
+        Ok(self
+            .message_outcome(message_hash)
+            .await?
+            .map(|outcome| outcome.masterchain_seqno))
+    }
+
+    pub async fn message_outcome(&self, message_hash: &str) -> Result<Option<TonMessageOutcome>, TonRpcError> {
         if message_hash.is_empty() || message_hash.len() > 256 {
             return Err(TonRpcError::InvalidResponse);
         }
@@ -352,7 +366,7 @@ impl TonRpcClient {
             .append_pair("msg_hash", message_hash)
             .append_pair("limit", "1");
         let response = self.get(url).await?;
-        parse_message_masterchain_seqno(&response)
+        parse_message_outcome(&response)
     }
 
     async fn get(&self, url: Url) -> Result<Vec<u8>, TonRpcError> {
@@ -560,6 +574,15 @@ impl TonFeeEstimate {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TonBroadcastResult {
     pub message_hash: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TonMessageOutcome {
+    pub masterchain_seqno: u64,
+    pub transaction_hash: String,
+    pub compute_success: bool,
+    pub action_success: bool,
+    pub recipient_bounced: bool,
 }
 
 #[derive(Clone, Debug, Display, Eq, PartialEq)]
@@ -801,7 +824,7 @@ fn parse_broadcast_result(bytes: &[u8]) -> Result<TonBroadcastResult, TonRpcErro
     Ok(TonBroadcastResult { message_hash })
 }
 
-fn parse_message_masterchain_seqno(bytes: &[u8]) -> Result<Option<u64>, TonRpcError> {
+fn parse_message_outcome(bytes: &[u8]) -> Result<Option<TonMessageOutcome>, TonRpcError> {
     let response: Json = json::from_slice(bytes).map_err(|_| TonRpcError::InvalidResponse)?;
     let transactions = response
         .get("transactions")
@@ -809,7 +832,27 @@ fn parse_message_masterchain_seqno(bytes: &[u8]) -> Result<Option<u64>, TonRpcEr
         .ok_or(TonRpcError::InvalidResponse)?;
     match transactions.first() {
         None => Ok(None),
-        Some(transaction) => parse_u64(transaction.get("mc_block_seqno")).map(Some),
+        Some(transaction) => Ok(Some(TonMessageOutcome {
+            masterchain_seqno: parse_u64(transaction.get("mc_block_seqno"))?,
+            transaction_hash: parse_hash(transaction.get("hash"))?,
+            compute_success: transaction
+                .pointer("/description/compute_ph/success")
+                .and_then(Json::as_bool)
+                == Some(true),
+            action_success: transaction
+                .pointer("/description/action/success")
+                .and_then(Json::as_bool)
+                == Some(true),
+            recipient_bounced: transaction
+                .get("out_msgs")
+                .and_then(Json::as_array)
+                .map(|messages| {
+                    messages
+                        .iter()
+                        .any(|message| message.get("bounced").and_then(Json::as_bool) == Some(true))
+                })
+                .unwrap_or(false),
+        })),
     }
 }
 
@@ -917,6 +960,35 @@ mod tests {
                 message_hash: "D3kz2hH78yEYpw==".to_owned(),
             }),
         );
+    }
+
+    #[test]
+    fn parses_message_execution_outcome_from_v3() {
+        let outcome = parse_message_outcome(
+            br#"{"transactions":[{"mc_block_seqno":42,"hash":"transaction-hash","description":{"compute_ph":{"success":true},"action":{"success":true}},"out_msgs":[{"bounced":false}]}]}"#,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(outcome.masterchain_seqno, 42);
+        assert_eq!(outcome.transaction_hash, "transaction-hash");
+        assert!(outcome.compute_success);
+        assert!(outcome.action_success);
+        assert!(!outcome.recipient_bounced);
+    }
+
+    #[test]
+    fn handles_a_message_not_yet_indexed_and_failed_execution() {
+        assert_eq!(parse_message_outcome(br#"{"transactions":[]}"#), Ok(None));
+
+        let outcome = parse_message_outcome(
+            br#"{"transactions":[{"mc_block_seqno":42,"hash":"transaction-hash","description":{"compute_ph":{"success":false},"action":{"success":false}},"out_msgs":[{"bounced":true}]}]}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(!outcome.compute_success);
+        assert!(!outcome.action_success);
+        assert!(outcome.recipient_bounced);
     }
 
     #[test]

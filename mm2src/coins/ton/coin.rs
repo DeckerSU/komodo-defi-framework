@@ -56,7 +56,7 @@ struct TonCoinFields {
 const TON_SWAP_UNSUPPORTED: &str = "TON atomic swaps are not supported; GRAM is wallet-only";
 const DEFAULT_TRANSFER_EXPIRATION_SECONDS: u64 = 60;
 const MAX_TRANSFER_EXPIRATION_SECONDS: u64 = 3_600;
-const MAX_PENDING_MESSAGES: usize = 32;
+const ACCOUNT_TRANSACTION_LOOKBACK: u8 = 32;
 
 fn unsupported_swap_transaction() -> TransactionResult {
     Err(TransactionErr::ProtocolNotSupported(TON_SWAP_UNSUPPORTED.to_owned()))
@@ -259,7 +259,7 @@ impl MarketCoinOps for TonCoin {
             async move {
                 loop {
                     let transactions = coin
-                        .account_transactions(MAX_PENDING_MESSAGES as u8)
+                        .account_transactions(ACCOUNT_TRANSACTION_LOOKBACK)
                         .await
                         .map_err(|error| error.to_string())?;
                     if transactions.iter().any(|transaction| {
@@ -268,20 +268,27 @@ impl MarketCoinOps for TonCoin {
                             .as_deref()
                             .map_or(false, |hash| ton_hashes_equal(&message_hash, hash))
                     }) {
-                        let included_at = coin
+                        if let Some(outcome) = coin
                             .0
                             .wallet
-                            .message_masterchain_seqno(&message_hash)
+                            .message_outcome(&message_hash)
                             .await
                             .map_err(|error| error.to_string())?
-                            .ok_or_else(|| "TON v3 has not indexed the included message yet".to_owned())?;
-                        let current = coin.current_block_number().await.map_err(|error| error.to_string())?;
-                        let required = included_at
-                            .checked_add(input.confirmations - 1)
-                            .ok_or_else(|| "TON confirmation height overflow".to_owned())?;
-                        if current >= required {
-                            coin.remove_pending_message(&message_hash);
-                            return Ok(());
+                        {
+                            if !outcome.compute_success || !outcome.action_success || outcome.recipient_bounced {
+                                return Err(
+                                    "TON message was included but execution or recipient delivery failed".to_owned()
+                                );
+                            }
+                            let included_at = outcome.masterchain_seqno;
+                            let current = coin.current_block_number().await.map_err(|error| error.to_string())?;
+                            let required = included_at
+                                .checked_add(input.confirmations - 1)
+                                .ok_or_else(|| "TON confirmation height overflow".to_owned())?;
+                            if current >= required {
+                                coin.remove_pending_message(&message_hash);
+                                return Ok(());
+                            }
                         }
                     }
                     if now_sec() >= input.wait_until {
@@ -516,11 +523,11 @@ impl TonCoin {
 
     fn register_pending_message(&self, message_hash: &str) -> Result<(), String> {
         let mut pending = self.0.pending_messages.lock();
-        if pending.contains(message_hash) {
-            return Err("TON external message is already pending reconciliation".to_owned());
-        }
-        if pending.len() >= MAX_PENDING_MESSAGES {
-            return Err("TON pending-message limit reached; reconcile existing broadcasts first".to_owned());
+        if !pending.is_empty() {
+            return Err(
+                "TON wallet has an unresolved external message; reconcile it before sending another transfer"
+                    .to_owned(),
+            );
         }
         pending.insert(message_hash.to_owned());
         Ok(())
@@ -535,7 +542,7 @@ impl TonCoin {
     /// inclusion reconciliation only: it does not claim recipient execution
     /// or masterchain confirmation.
     pub async fn reconcile_pending_messages(&self) -> Result<usize, TonActivationError> {
-        let transactions = self.0.wallet.account_transactions(MAX_PENDING_MESSAGES as u8).await?;
+        let transactions = self.0.wallet.account_transactions(ACCOUNT_TRANSACTION_LOOKBACK).await?;
         let observed: Vec<_> = transactions
             .iter()
             .filter_map(|transaction| transaction.inbound_message_hash.as_deref())
@@ -866,5 +873,20 @@ mod tests {
         assert!(ton_hashes_equal(&hex::encode(raw), &BASE64.encode(raw)));
         assert!(ton_hashes_equal(&hex::encode(raw), &URL_SAFE_NO_PAD.encode(raw)));
         assert!(!ton_hashes_equal(&hex::encode(raw), &hex::encode([0xcdu8; 32])));
+    }
+
+    #[test]
+    fn prevents_parallel_external_messages_for_one_wallet() {
+        let coin = TonCoin::new(
+            config(),
+            request(),
+            PrivKeyBuildPolicy::IguanaPrivKey(IguanaPrivKey::from([0x42; 32])),
+        )
+        .unwrap();
+
+        coin.register_pending_message("first-message").unwrap();
+        assert!(coin.register_pending_message("second-message").is_err());
+        coin.remove_pending_message("first-message");
+        assert!(coin.register_pending_message("second-message").is_ok());
     }
 }

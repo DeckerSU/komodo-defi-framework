@@ -202,6 +202,16 @@ impl TonWalletContext {
             .map_err(TonActivationError::Rpc)
     }
 
+    pub async fn message_outcome(
+        &self,
+        message_hash: &str,
+    ) -> Result<Option<super::TonMessageOutcome>, TonActivationError> {
+        self.rpc
+            .message_outcome(message_hash)
+            .await
+            .map_err(TonActivationError::Rpc)
+    }
+
     /// Broadcasts a previously signed external BOC exactly once through the
     /// primary endpoint. A transport timeout has an unknown chain outcome and
     /// is deliberately not retried.
