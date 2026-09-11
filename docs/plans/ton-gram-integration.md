@@ -593,7 +593,7 @@ History must not be marked complete when a provider cannot supply older pages.
 
 ### M8 — Balance and transaction-history streaming
 
-- [ ] Add TON variants to the existing streaming activators and use the coin's abortable
+- [x] Add TON transaction-history streaming to the existing activation path and use the coin's abortable
   spawner. The existing native SSE endpoint is `/event-stream`.
 - [ ] Publish history changes after successful persistence; reuse the existing history
   event streamer if its events fit, or add a focused TON implementation. Do not create

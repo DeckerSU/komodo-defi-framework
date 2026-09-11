@@ -238,10 +238,11 @@ impl InitStandaloneCoinActivationOps for TonCoin {
         &self,
         _metrics: MetricsArc,
         storage: impl TxHistoryStorage,
-        _streaming_manager: StreamingManager,
+        streaming_manager: StreamingManager,
         _current_balances: HashMap<String, BigDecimal>,
     ) {
         let coin = self.clone();
-        self.spawner().spawn(async move { coin.history_loop(storage).await });
+        self.spawner()
+            .spawn(async move { coin.history_loop(storage, Some(streaming_manager)).await });
     }
 }

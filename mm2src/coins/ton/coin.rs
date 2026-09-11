@@ -7,6 +7,7 @@ use crate::coin_errors::{ValidatePaymentError, ValidatePaymentResult};
 use crate::hd_wallet::HDAddressSelector;
 use crate::my_tx_history_v2::{CoinWithTxHistoryV2, MyTxHistoryErrorV2, MyTxHistoryTarget, TxHistoryStorage};
 use crate::tx_history_storage::{GetTxHistoryFilters, TxHistoryStorageBuilder, WalletId};
+use crate::utxo::tx_history_events::TxHistoryEventStreamer;
 use crate::utxo::utxo_common::big_decimal_from_sat_unsigned;
 use crate::{
     BalanceError, BalanceFut, CheckIfMyPaymentSentArgs, CoinBalance, ConfirmPaymentInput, DexFee, FoundSwapTxSpend,
@@ -31,6 +32,7 @@ use futures::{FutureExt, TryFutureExt};
 use futures01::Future;
 use keys::KeyPair;
 use mm2_err_handle::prelude::*;
+use mm2_event_stream::{DeriveStreamerId, StreamingManager};
 use mm2_number::{BigDecimal, MmNumber};
 use parking_lot::Mutex;
 use rpc::v1::types::Bytes as BytesJson;
@@ -473,9 +475,10 @@ impl MmCoin for TonCoin {
             },
         };
         let coin = self.clone();
+        let streaming_manager = ctx.event_stream_manager.clone();
         Box::new(
             async move {
-                coin.history_loop(storage).await;
+                coin.history_loop(storage, Some(streaming_manager)).await;
                 Ok(())
             }
             .boxed()
@@ -682,6 +685,17 @@ impl TonCoin {
     where
         Storage: TxHistoryStorage,
     {
+        self.sync_history_once_with_streaming(storage, None).await
+    }
+
+    async fn sync_history_once_with_streaming<Storage>(
+        &self,
+        storage: &Storage,
+        streaming_manager: Option<&StreamingManager>,
+    ) -> Result<usize, String>
+    where
+        Storage: TxHistoryStorage,
+    {
         let wallet_id = self.history_wallet_id();
         storage
             .init(&wallet_id)
@@ -726,10 +740,18 @@ impl TonCoin {
             }
             added += new_transactions.len();
             if !new_transactions.is_empty() {
+                let transactions_to_stream = new_transactions.clone();
                 storage
                     .add_transactions_to_history(&wallet_id, new_transactions)
                     .await
                     .map_err(|error| format!("TON history storage write failed: {error:?}"))?;
+                if let Some(streaming_manager) = streaming_manager {
+                    streaming_manager
+                        .send_fn(&TxHistoryEventStreamer::derive_streamer_id(self.ticker()), || {
+                            transactions_to_stream
+                        })
+                        .ok();
+                }
             }
             if page_len < usize::from(HISTORY_PAGE_SIZE) {
                 break;
@@ -739,13 +761,16 @@ impl TonCoin {
         Ok(added)
     }
 
-    pub async fn history_loop<Storage>(&self, storage: Storage)
+    pub async fn history_loop<Storage>(&self, storage: Storage, streaming_manager: Option<StreamingManager>)
     where
         Storage: TxHistoryStorage,
     {
         loop {
             self.set_history_sync_state(HistorySyncState::InProgress(serde_json::json!({})));
-            match self.sync_history_once(&storage).await {
+            match self
+                .sync_history_once_with_streaming(&storage, streaming_manager.as_ref())
+                .await
+            {
                 Ok(_) => self.set_history_sync_state(HistorySyncState::Finished),
                 Err(error) => {
                     self.set_history_sync_state(HistorySyncState::Error(serde_json::json!({ "message": error })));

@@ -65,6 +65,10 @@ pub async fn enable_tx_history(
             let streamer = TxHistoryEventStreamer::new(req.coin);
             ctx.event_stream_manager.add(client_id, streamer, coin.spawner()).await
         },
+        MmCoinEnum::TonCoinVariant(coin) => {
+            let streamer = TxHistoryEventStreamer::new(req.coin);
+            ctx.event_stream_manager.add(client_id, streamer, coin.spawner()).await
+        },
         MmCoinEnum::ZCoinVariant(coin) => {
             let streamer = ZCoinTxHistoryEventStreamer::new(coin.clone());
             ctx.event_stream_manager.add(client_id, streamer, coin.spawner()).await
