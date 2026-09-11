@@ -10,8 +10,9 @@
 //! [blogpost]: https://rustwasm.github.io/2018/10/24/multithreading-rust-and-wasm.html
 
 use super::*;
+use common::executor::Timer;
 use common::log::{register_callback, LogLevel, WasmCallback};
-use common::{console_err, console_info, deserialize_from_js, executor, serialize_to_js, set_panic_hook};
+use common::{console_err, console_info, deserialize_from_js, executor, now_ms, serialize_to_js, set_panic_hook};
 use enum_primitive_derive::Primitive;
 use mm2_main::LpMainParams;
 use mm2_rpc::data::legacy::MmVersionResponse;
@@ -189,6 +190,25 @@ pub enum Mm2RpcErr {
     InternalError = 3,
 }
 
+const CONTEXT_DROP_TIMEOUT_MS: u64 = 10_000;
+
+/// `ctx.stop()` aborts the node's tasks, but they can retain the context until
+/// their cancellation is observed. Wait for the final strong reference to be
+/// released so all IndexedDB handles are closed before a subsequent login.
+async fn wait_for_context_drop(ctx_weak: mm2_core::mm_ctx::MmWeak) -> Result<(), String> {
+    let started_at = now_ms();
+    while !ctx_weak.dropped() {
+        let elapsed_ms = now_ms() - started_at;
+        if elapsed_ms >= CONTEXT_DROP_TIMEOUT_MS {
+            return Err(format!(
+                "KDF context was not dropped within {CONTEXT_DROP_TIMEOUT_MS} ms after stop"
+            ));
+        }
+        Timer::sleep(0.05).await;
+    }
+    Ok(())
+}
+
 /// Invokes an RPC request.
 ///
 /// # Parameters
@@ -308,6 +328,10 @@ pub async fn mm2_stop() -> Result<(), JsValue> {
         PrepareForStopResult::ReadyStopStatus(err) => return Err(JsValue::from(err as i32)),
     };
 
+    let ctx_weak = ctx.weak();
     finalize_mm2_stop(ctx).await;
+    wait_for_context_drop(ctx_weak)
+        .await
+        .map_err(|error| JsValue::from_str(&error))?;
     Ok(())
 }
