@@ -14,9 +14,9 @@ use crate::{
     RawTransactionFut, RawTransactionRequest, RefundPaymentArgs, SearchForSwapTxSpendInput, SendPaymentArgs,
     SignatureError, SignatureResult, SpendPaymentArgs, SwapOps, TradeFee, TradePreimageError, TradePreimageFut,
     TradePreimageResult, TradePreimageValue, TransactionData, TransactionDetails, TransactionErr, TransactionResult,
-    TransactionType, TxFeeDetails, TxMarshalingErr, UnexpectedDerivationMethod, ValidateAddressResult, ValidateFeeArgs,
-    ValidateOtherPubKeyErr, ValidatePaymentInput, VerificationError, VerificationResult, WaitForHTLCTxSpendArgs,
-    WatcherOps, WeakSpawner, WithdrawError, WithdrawFut, WithdrawRequest,
+    TransactionType, TxFeeDetails, TxHistoryError, TxHistoryFut, TxMarshalingErr, UnexpectedDerivationMethod,
+    ValidateAddressResult, ValidateFeeArgs, ValidateOtherPubKeyErr, ValidatePaymentInput, VerificationError,
+    VerificationResult, WaitForHTLCTxSpendArgs, WatcherOps, WeakSpawner, WithdrawError, WithdrawFut, WithdrawRequest,
 };
 use async_trait::async_trait;
 use base64::{
@@ -25,7 +25,7 @@ use base64::{
 };
 use common::{
     executor::{abortable_queue::AbortableQueue, AbortableSystem, AbortedError, Timer},
-    now_sec,
+    now_sec, PagingOptionsEnum,
 };
 use futures::{FutureExt, TryFutureExt};
 use futures01::Future;
@@ -37,6 +37,7 @@ use rpc::v1::types::Bytes as BytesJson;
 use rpc::v1::types::H264 as H264Json;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -476,6 +477,47 @@ impl MmCoin for TonCoin {
             async move {
                 coin.history_loop(storage).await;
                 Ok(())
+            }
+            .boxed()
+            .compat(),
+        )
+    }
+    fn load_history_from_file(&self, ctx: &mm2_core::mm_ctx::MmArc) -> TxHistoryFut<Vec<TransactionDetails>> {
+        let storage = match TxHistoryStorageBuilder::new(ctx).build() {
+            Ok(storage) => storage,
+            Err(error) => {
+                return Box::new(futures01::future::err(MmError::new(TxHistoryError::ErrorLoading(
+                    error.to_string(),
+                ))));
+            },
+        };
+        let wallet_id = self.history_wallet_id();
+        let address = match self.my_address() {
+            Ok(address) => address,
+            Err(error) => {
+                return Box::new(futures01::future::err(MmError::new(TxHistoryError::InternalError(
+                    error.to_string(),
+                ))));
+            },
+        };
+        Box::new(
+            async move {
+                storage
+                    .init(&wallet_id)
+                    .await
+                    .map_err(|error| MmError::new(TxHistoryError::ErrorLoading(format!("{error:?}"))))?;
+                let page = NonZeroUsize::new(1)
+                    .ok_or_else(|| MmError::new(TxHistoryError::ErrorLoading("invalid history page".to_owned())))?;
+                let history = storage
+                    .get_history(
+                        &wallet_id,
+                        GetTxHistoryFilters::for_address(address),
+                        PagingOptionsEnum::PageNumber(page),
+                        u32::MAX as usize,
+                    )
+                    .await
+                    .map_err(|error| MmError::new(TxHistoryError::ErrorLoading(format!("{error:?}"))))?;
+                Ok(history.transactions)
             }
             .boxed()
             .compat(),

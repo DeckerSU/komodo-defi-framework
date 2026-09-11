@@ -566,20 +566,20 @@ Provider-backed broadcast scenarios remain in M9's reproducible test harness.
 
 ### M7 — Transaction history, legacy and v2
 
-- [ ] Add paginated account history using Toncenter v2 `getTransactions` and/or v3 indexed
+- [x] Add paginated account history using Toncenter v2 `getTransactions` and/or v3 indexed
   transactions with explicit provider capabilities. v3 can resolve messages/traces and
   masterchain associations; v2 pagination uses an account LT/hash cursor.
 - [ ] Store actual account transaction hash, LT, account/network/wallet identity, time,
   incoming/outgoing messages, fees and status. Stable internal IDs must not collide when
   one transaction contains multiple transfers. Use checked storage conversions.
-- [ ] Reuse `TxHistoryStorage`/`TxHistoryStorageBuilder` native and WASM implementations.
+- [x] Reuse `TxHistoryStorage`/`TxHistoryStorageBuilder` native and WASM implementations.
   Add a small TON cursor/pending-mapping table only if existing storage cannot hold the
   necessary metadata. Do not create an unrelated database framework.
 - [ ] Namespace by network and wallet identity so Iguana, HD and future subwallets cannot
   contaminate each other's history. Avoid treating formatting variants as different wallets.
 - [ ] Implement bounded initial backfill, incremental catch-up, overlap deduplication,
   persisted cursor, temporary errors, finality updates and restart recovery.
-- [ ] Connect both `my_tx_history_v2_rpc` and the legacy history handler to the same
+- [x] Connect both `my_tx_history_v2_rpc` and the legacy history handler to the same
   TON source of truth. Do not leave legacy reads pointing to a separate stale JSON file.
 - [ ] Expose synchronization state and correct balance effects for incoming, outgoing,
   self-transfer, fees, deployment, bounced and failed transactions. A self-transfer is
